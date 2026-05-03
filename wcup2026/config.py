@@ -12,8 +12,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = PROJECT_ROOT / "data" / "teams_seed.csv"
 RESULTS_DIR = PROJECT_ROOT / "resultados"
+REPORT_DIR = PROJECT_ROOT / "reporte"
 MONTECARLO_RESULTS_PATH = RESULTS_DIR / "resultado_montecarlo.xlsx"
 LLM_ANALYSIS_PATH = RESULTS_DIR / "resultado_llm.md"
+REPORT_TEMPLATE_PATH = REPORT_DIR / "template_reporte_wcup2026.tex"
+REPORT_TEX_PATH = REPORT_DIR / "reporte_wcup2026.tex"
+REPORT_PDF_PATH = REPORT_DIR / "reporte_wcup2026.pdf"
 
 APP_TITLE = "WCUP 2026 Predictor"
 APP_CAPTION = "Simulador Monte Carlo para explorar quien podria ganar el Mundial 2026."

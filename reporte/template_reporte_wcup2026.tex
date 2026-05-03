@@ -1,0 +1,122 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage[table]{xcolor}
+\usepackage{tikz}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{graphicx}
+
+\geometry{margin=0.78in, top=0.9in, bottom=0.9in}
+\definecolor{qablue}{HTML}{286A8A}
+\definecolor{qaturquoise}{HTML}{46C6AE}
+\definecolor{qaaccent}{HTML}{46C6AE}
+\definecolor{qaink}{HTML}{182B33}
+\definecolor{qamutex}{HTML}{61707A}
+\definecolor{qasoft}{HTML}{EFF8F6}
+\definecolor{qaash}{HTML}{DCEDEA}
+\definecolor{qaline}{HTML}{B7D9D2}
+\hypersetup{colorlinks=true, linkcolor=qaturquoise, urlcolor=qablue}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.62em}
+\setlength{\headheight}{31pt}
+\renewcommand{\arraystretch}{1.18}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\raisebox{-0.18\height}{\includegraphics[height=0.24in]{logo_white_background.jpg}}}
+\rhead{\textcolor{qamutex}{WCUP 2026 Predictor}}
+\cfoot{\textcolor{qamutex}{\thepage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{qaline}\leaders\hrule height \headrulewidth\hfill}}
+
+\newcommand{\qasection}[1]{%
+\vspace{0.9em}
+{\color{qaturquoise}\rule{0.14\linewidth}{1.2pt}}\par
+{\Large\bfseries\color{qaink}#1}\par
+\vspace{0.25em}}
+
+\newcommand{\qakicker}[1]{%
+{\small\bfseries\color{qaturquoise}\MakeUppercase{#1}}\par\vspace{0.25em}}
+
+\newcommand{\qakpicard}[3]{%
+\begingroup
+\setlength{\fboxsep}{5pt}
+\colorbox{qasoft}{%
+\begin{minipage}[t][1.02in][t]{0.83\linewidth}
+{\scriptsize\bfseries\color{qaturquoise}\MakeUppercase{#1}}\par
+{\bfseries\color{qaink}#2}\par
+{\Large\bfseries\color{qablue}#3}
+\end{minipage}}
+\endgroup}
+
+\newcommand{\qaempty}[1]{%
+\begingroup
+\setlength{\fboxsep}{8pt}
+\colorbox{qasoft}{\begin{minipage}{0.94\linewidth}\textcolor{qamutex}{#1}\end{minipage}}
+\endgroup}
+
+\begin{document}
+\pagenumbering{gobble}
+
+\begin{titlepage}
+\thispagestyle{empty}
+\begin{tikzpicture}[remember picture,overlay]
+  \fill[qablue] (current page.north west) rectangle ([xshift=0.22in]current page.south west);
+  \fill[white] (current page.south west) rectangle (current page.north east);
+  \fill[qasoft] ([yshift=-2.18in]current page.north west) rectangle (current page.north east);
+  \fill[qaaccent] ([xshift=0.22in,yshift=-2.18in]current page.north west) rectangle ([yshift=-2.24in]current page.north east);
+\end{tikzpicture}
+
+\vspace*{0.02in}
+\includegraphics[width=2.25in]{logo_white_background.jpg}
+
+\vspace*{0.78in}
+{\small\bfseries\color{qaturquoise}\MakeUppercase{Reporte analitico}}\par
+{\Huge\bfseries\color{qaink}<<REPORT_TITLE>>\par}
+\vspace{0.35em}
+{\Large\color{qamutex}<<REPORT_SUBTITLE>>\par}
+\vspace{1.1em}
+{\color{qablue}\rule{0.32\linewidth}{2pt}}\par
+
+\vfill
+\begin{tabularx}{0.93\linewidth}{@{}Xr@{}}
+{\bfseries\color{qaink}<<QA_TAGLINE>>} & {\color{qamutex}<<REPORT_DATE>>} \\
+{\color{qamutex}<<QA_WEBSITE>> \quad | \quad <<QA_CONTACT>>} & {\color{qamutex}Guatemala, 01001}
+\end{tabularx}
+\end{titlepage}
+\clearpage
+\pagenumbering{arabic}
+
+\qakicker{Lectura ejecutiva}
+\qasection{Resumen Ejecutivo}
+<<EXECUTIVE_SUMMARY>>
+
+<<KPI_STRIP>>
+
+\qakicker{Modelo cuantitativo}
+\qasection{Grafico de Favoritos}
+<<CHAMPION_CHART>>
+
+\qasection{Tabla de Favoritos}
+<<TOP_TABLE>>
+
+\qasection{Favoritos por Grupo}
+<<GROUP_TABLE>>
+
+\qakicker{Interpretacion asistida}
+\qasection{Resultado del LLM}
+<<LLM_RESULT>>
+
+\vfill
+{\footnotesize\color{qamutex}
+Reporte generado por WCUP 2026 Predictor para Quality Analytics. La simulacion y el LLM apoyan el analisis, pero no sustituyen criterio experto ni validacion de fuentes externas.
+}
+
+\end{document}

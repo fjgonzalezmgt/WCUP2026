@@ -44,6 +44,17 @@ def _extract_response_text(response: Any) -> str:
     Algunas versiones del SDK exponen ``output_text`` vacio aunque el
     contenido exista dentro de ``response.output``. Esta funcion intenta
     ambas rutas para evitar respuestas invisibles en la UI.
+
+    Parameters
+    ----------
+    response : Any
+        Objeto de respuesta devuelto por ``client.responses.create``.
+
+    Returns
+    -------
+    str
+        Texto extraido y concatenado de la respuesta, o cadena vacia si
+        no se encontro ningun fragmento de texto.
     """
     output_text = getattr(response, "output_text", None)
     if isinstance(output_text, str) and output_text.strip():

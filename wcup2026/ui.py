@@ -49,6 +49,7 @@ from wcup2026.persistence import (
     save_llm_analysis,
     save_montecarlo_results,
 )
+from wcup2026.report import generate_report
 from wcup2026.simulator import describe_matchup, simulate_many
 
 
@@ -96,7 +97,20 @@ def inject_style() -> None:
 
 
 def render_copy_button(text: str, key: str) -> None:
-        """Renderizar un boton para copiar texto al portapapeles del navegador."""
+    """Renderizar un boton HTML para copiar texto al portapapeles del navegador.
+
+    Inyecta un componente HTML con JavaScript que llama a
+    ``navigator.clipboard.writeText`` al hacer clic.  El ``key`` debe ser
+    unico en la pagina para evitar colisiones de IDs.
+
+    Parameters
+    ----------
+    text : str
+        Contenido que se copiara al portapapeles al pulsar el boton.
+    key : str
+        Sufijo unico que se usa para construir los IDs del boton y el
+        indicador de estado en el DOM.
+    """
         button_id = f"copy-llm-{key}"
         status_id = f"copy-llm-status-{key}"
         payload = json.dumps(text)
@@ -176,7 +190,13 @@ def run_simulation_cached(csv_text: str, params: SimParams) -> pd.DataFrame:
 
 
 def load_persisted_outputs_once() -> None:
-    """Cargar resultados guardados en disco una sola vez por sesion."""
+    """Cargar resultados guardados en disco una sola vez por sesion de Streamlit.
+
+    Usa la clave ``_persisted_outputs_loaded`` del ``st.session_state`` como
+    centinela para evitar lecturas repetidas en re-runs.  Inicializa
+    ``simulation_results``, ``simulation_df`` y ``llm_answer`` si existen
+    datos guardados y aun no hay valores en la sesion.
+    """
     if st.session_state.get("_persisted_outputs_loaded"):
         return
 
@@ -449,6 +469,61 @@ def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None
             st.warning("El LLM respondio sin texto visible. Revisa el modelo configurado o intenta de nuevo.")
 
 
+def render_report_view(results: pd.DataFrame | None, df: pd.DataFrame) -> None:
+    """Renderizar la pestana de generacion del reporte LaTeX/PDF.
+
+    Muestra un boton para generar el archivo TEX y compilar el PDF.  Si
+    aun no hay simulacion realizada, muestra un mensaje informativo.
+    Tras la compilacion exitosa ofrece botones de descarga para el PDF
+    y el TEX.
+
+    Parameters
+    ----------
+    results : pd.DataFrame or None
+        DataFrame de resultados de la simulacion.  Si es ``None``, se
+        muestra un aviso pidiendo simular primero.
+    df : pd.DataFrame
+        DataFrame original de equipos con ratings.
+    """
+    st.subheader("Reporte")
+    st.markdown(
+        '<div class="small-note">Genera reporte/reporte_wcup2026.tex desde el template con placeholders y compila el PDF con pdflatex.</div>',
+        unsafe_allow_html=True,
+    )
+
+    if results is None:
+        st.info("Pulsa **Simular torneo** antes de generar el reporte.")
+        return
+
+    if st.button("Generar reporte", type="primary", help="Crea el archivo LaTeX final y compila reporte_wcup2026.pdf con pdflatex."):
+        try:
+            with st.spinner("Generando reporte LaTeX y compilando PDF..."):
+                tex_path, pdf_path = generate_report(
+                    results=results,
+                    teams=df,
+                    llm_text=st.session_state.get("llm_answer"),
+                    params=st.session_state.get("params"),
+                    compile_pdf=True,
+                )
+            st.success(f"Reporte generado: {tex_path.name}")
+            if pdf_path is not None:
+                st.caption(f"PDF compilado: {pdf_path}")
+                st.download_button(
+                    "Descargar PDF",
+                    data=pdf_path.read_bytes(),
+                    file_name=pdf_path.name,
+                    mime="application/pdf",
+                )
+            st.download_button(
+                "Descargar TEX",
+                data=tex_path.read_text(encoding="utf-8"),
+                file_name=tex_path.name,
+                mime="application/x-tex",
+            )
+        except Exception as exc:
+            st.error(f"No se pudo generar el reporte: {exc}")
+
+
 def render_data_editor(default_df: pd.DataFrame, model: str) -> pd.DataFrame:
     """Renderizar el editor de ratings con actualizacion via IA.
 
@@ -546,7 +621,7 @@ def render_app() -> None:
     results = st.session_state.get("simulation_results")
     sim_df = st.session_state.get("simulation_df", working_df)
 
-    tab_pred, tab_groups, tab_model, tab_llm = st.tabs(["Prediccion", "Grupos", "Modelo", "LLM"])
+    tab_pred, tab_groups, tab_model, tab_llm, tab_report = st.tabs(["Prediccion", "Grupos", "Modelo", "LLM", "Reporte"])
     with tab_pred:
         if results is None:
             st.info("Pulsa **Simular torneo** para ver las predicciones.")
@@ -564,6 +639,8 @@ def render_app() -> None:
             render_llm_view(None, sim_df, llm_model)
         else:
             render_llm_view(results, sim_df, llm_model)
+    with tab_report:
+        render_report_view(results, sim_df)
 
 
 def main() -> None:

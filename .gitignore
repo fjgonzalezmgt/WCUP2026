@@ -12,6 +12,8 @@ __pycache__/
 env/
 venv/
 resultados/
+reporte/*
+!reporte/template_reporte_wcup2026.tex
 dist/
 build/
 *.egg-info/
