@@ -43,6 +43,12 @@ from wcup2026.llm import (
     default_model,
 )
 from wcup2026.parameters import SimParams
+from wcup2026.persistence import (
+    load_llm_analysis,
+    load_montecarlo_results,
+    save_llm_analysis,
+    save_montecarlo_results,
+)
 from wcup2026.simulator import describe_matchup, simulate_many
 
 
@@ -167,6 +173,30 @@ def run_simulation_cached(csv_text: str, params: SimParams) -> pd.DataFrame:
     df = dataframe_from_csv_text(csv_text)
     validate_team_data(df)
     return simulate_many(df, params)
+
+
+def load_persisted_outputs_once() -> None:
+    """Cargar resultados guardados en disco una sola vez por sesion."""
+    if st.session_state.get("_persisted_outputs_loaded"):
+        return
+
+    try:
+        persisted = load_montecarlo_results()
+        if persisted is not None:
+            results, teams = persisted
+            st.session_state.setdefault("simulation_results", results)
+            st.session_state.setdefault("simulation_df", teams)
+    except Exception as exc:  # pragma: no cover - UI guardrail
+        st.warning(f"No se pudo cargar la simulacion guardada: {exc}")
+
+    try:
+        llm_answer = load_llm_analysis()
+        if llm_answer:
+            st.session_state.setdefault("llm_answer", llm_answer)
+    except Exception as exc:  # pragma: no cover - UI guardrail
+        st.warning(f"No se pudo cargar el analisis LLM guardado: {exc}")
+
+    st.session_state["_persisted_outputs_loaded"] = True
 
 
 def render_sidebar() -> tuple[SimParams, str]:
@@ -406,6 +436,7 @@ def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None
             try:
                 with st.spinner("Consultando al LLM..."):
                     st.session_state["llm_answer"] = call_llm_analysis(model, payload).strip()
+                    save_llm_analysis(st.session_state["llm_answer"])
             except Exception as exc:  # pragma: no cover - UI guardrail
                 st.error(f"No se pudo consultar el LLM: {exc}")
 
@@ -488,6 +519,8 @@ def render_app() -> None:
     titulo, editor de datos, ejecucion de la simulacion y las cuatro
     pestanas de contenido (Prediccion, Grupos, Modelo, LLM).
     """
+    load_persisted_outputs_once()
+
     params, llm_model = render_sidebar()
     st.session_state["params"] = params
 
@@ -502,6 +535,11 @@ def render_app() -> None:
             csv_text = dataframe_to_csv_text(working_df)
             st.session_state["simulation_results"] = run_simulation_cached(csv_text, params)
             st.session_state["simulation_df"] = working_df.copy()
+            save_montecarlo_results(
+                st.session_state["simulation_results"],
+                st.session_state["simulation_df"],
+                params,
+            )
         except Exception as exc:
             st.error(f"No se pudo correr la simulacion: {exc}")
 

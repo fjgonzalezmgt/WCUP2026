@@ -11,6 +11,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = PROJECT_ROOT / "data" / "teams_seed.csv"
+RESULTS_DIR = PROJECT_ROOT / "resultados"
+MONTECARLO_RESULTS_PATH = RESULTS_DIR / "resultado_montecarlo.xlsx"
+LLM_ANALYSIS_PATH = RESULTS_DIR / "resultado_llm.md"
 
 APP_TITLE = "WCUP 2026 Predictor"
 APP_CAPTION = "Simulador Monte Carlo para explorar quien podria ganar el Mundial 2026."
@@ -41,4 +44,3 @@ CHART_COLORS = [
     "#6c5ce7",
     "#7f8c8d",
 ]
-

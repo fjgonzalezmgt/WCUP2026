@@ -10,5 +10,6 @@ dependencies:
   - streamlit>=1.35
   - plotly>=5.22
   - python-dotenv>=1.0
+  - openpyxl>=3.1
   - pip:
       - openai>=1.40
