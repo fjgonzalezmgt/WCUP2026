@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date
 from typing import Any
 
@@ -149,6 +150,142 @@ def call_llm_news_search(model: str, teams: pd.DataFrame) -> str:
         input=prompt,
     )
     return response.output_text
+
+
+def _extract_json(text: str) -> Any:
+    """Extraer el primer objeto o array JSON valido de un texto.
+
+    Intenta parseo directo, luego extrae de bloque de codigo markdown
+    y finalmente busca el primer array u objeto JSON en el texto.
+
+    Parameters
+    ----------
+    text : str
+        Texto que contiene JSON (posiblemente con markdown o texto adicional).
+
+    Returns
+    -------
+    Any
+        Estructura Python resultante del parseo JSON.
+
+    Raises
+    ------
+    ValueError
+        Si no se encontro ningun JSON valido en el texto.
+    """
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+    match = re.search(r"(\[[\s\S]+?\]|\{[\s\S]+?\})", text)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+    raise ValueError("No se encontro JSON valido en la respuesta del LLM.")
+
+
+def call_llm_ratings_update(model: str, teams: pd.DataFrame) -> pd.DataFrame:
+    """Usar busqueda web para obtener ratings actualizados de todas las selecciones.
+
+    Construye un prompt estructurado solicitando al LLM que busque en internet
+    los datos mas recientes de Elo, ranking FIFA, ataque, defensa, plantilla
+    y forma para cada seleccion participante.  Devuelve un DataFrame con los
+    valores actualizados listo para fusionarse con el dataset base mediante
+    ``apply_ratings_update``.
+
+    Parameters
+    ----------
+    model : str
+        Nombre del modelo OpenAI.
+    teams : pd.DataFrame
+        DataFrame con los equipos participantes (columna ``team`` requerida).
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame con columnas ``team``, ``elo``, ``fifa_rank_proxy``,
+        ``attack``, ``defense``, ``squad`` y ``form`` para cada equipo
+        devuelto por el LLM.
+
+    Raises
+    ------
+    ValueError
+        Si la respuesta del LLM no contiene JSON parseable.
+    openai.OpenAIError
+        Si la llamada a la API falla.
+    """
+    from openai import OpenAI
+
+    client = OpenAI()
+    team_list = ", ".join(teams["team"].tolist())
+    schema_example = json.dumps(
+        {
+            "ratings": [
+                {
+                    "team": "Argentina",
+                    "elo": 2080,
+                    "fifa_rank_proxy": 95,
+                    "attack": 88,
+                    "defense": 82,
+                    "squad": 87,
+                    "form": 80,
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    prompt = (
+        f"Fecha: {date.today().isoformat()}. Copa del Mundo 2026.\n"
+        f"Selecciones participantes: {team_list}.\n\n"
+        "Busca en internet los datos mas recientes de cada seleccion y devuelve "
+        "un JSON con este esquema exacto (sin texto adicional):\n"
+        f"{schema_example}\n\n"
+        "Para cada equipo incluye:\n"
+        "- team: nombre exacto tal como aparece en la lista\n"
+        "- elo: rating ELO actual (rango tipico 1400-2200)\n"
+        "- fifa_rank_proxy: puntuacion de ranking FIFA en escala 0-100 (100 = mejor)\n"
+        "- attack: potencial ofensivo 0-100 basado en estadisticas de goles y xG recientes\n"
+        "- defense: solidez defensiva 0-100 basada en goles encajados y xGA recientes\n"
+        "- squad: calidad del plantel 0-100 segun valor de mercado y profundidad de banquillo\n"
+        "- form: forma reciente 0-100 basada en resultados de los ultimos 6 meses\n\n"
+        "Devuelve SOLO el JSON valido, sin explicaciones, sin markdown, sin texto extra."
+    )
+
+    response = client.responses.create(
+        model=model,
+        tools=[
+            {
+                "type": "web_search",
+                "search_context_size": "high",
+                "user_location": {
+                    "type": "approximate",
+                    "country": "US",
+                    "timezone": "America/Guatemala",
+                },
+            }
+        ],
+        tool_choice="required",
+        instructions=(
+            "Eres un analista cuantitativo de futbol. Usa busqueda web para obtener datos "
+            "reales y actualizados. Devuelve UNICAMENTE un JSON valido con el esquema "
+            "solicitado. No incluyas markdown, backticks ni texto adicional."
+        ),
+        input=prompt,
+    )
+
+    data = _extract_json(response.output_text)
+    ratings_list = data.get("ratings", data) if isinstance(data, dict) else data
+    return pd.DataFrame(ratings_list)
 
 
 def call_llm_analysis(model: str, payload: dict[str, Any]) -> str:

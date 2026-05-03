@@ -18,11 +18,13 @@ from wcup2026.config import (
     APP_CAPTION,
     APP_TITLE,
     CHART_COLORS,
+    DATA_PATH,
     FIFA_GROUPS_URL,
     FIFA_SCHEDULE_URL,
     OPENAI_RESPONSES_URL,
 )
 from wcup2026.data import (
+    apply_ratings_update,
     dataframe_from_csv_text,
     dataframe_to_csv_text,
     load_team_data,
@@ -33,6 +35,7 @@ from wcup2026.llm import (
     build_analysis_payload,
     call_llm_analysis,
     call_llm_news_search,
+    call_llm_ratings_update,
     default_model,
 )
 from wcup2026.parameters import SimParams
@@ -361,17 +364,20 @@ def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None
         st.markdown(st.session_state["llm_answer"])
 
 
-def render_data_editor(default_df: pd.DataFrame) -> pd.DataFrame:
-    """Renderizar el editor de ratings y el uploader de CSV personalizado.
+def render_data_editor(default_df: pd.DataFrame, model: str) -> pd.DataFrame:
+    """Renderizar el editor de ratings con actualizacion via IA.
 
-    Permite al usuario cargar su propio CSV o editar directamente los
-    valores de ataque, defensa, plantilla y forma en una tabla interactiva.
+    Muestra un boton para obtener ratings actualizados usando busqueda web
+    a traves del LLM, y permite editar directamente los valores de ataque,
+    defensa, plantilla y forma en una tabla interactiva.
 
     Parameters
     ----------
     default_df : pd.DataFrame
-        DataFrame predeterminado que se muestra si el usuario no carga un
-        archivo propio.
+        DataFrame predeterminado que se muestra si no se ha realizado
+        ninguna actualizacion via IA.
+    model : str
+        Nombre del modelo OpenAI a usar para la actualizacion de ratings.
 
     Returns
     -------
@@ -379,8 +385,28 @@ def render_data_editor(default_df: pd.DataFrame) -> pd.DataFrame:
         DataFrame con los ratings (posiblemente editados) que se usa para
         la simulacion.
     """
-    uploaded = st.file_uploader("Carga un CSV propio de ratings", type=["csv"], help="Sube tu propio archivo CSV con ratings personalizados. Debe tener las mismas columnas que el dataset base.")
-    working_df = pd.read_csv(uploaded) if uploaded is not None else default_df.copy()
+    if "working_df" not in st.session_state:
+        st.session_state["working_df"] = default_df.copy()
+
+    if api_key_available():
+        if st.button(
+            "Actualizar ratings con IA",
+            help="Usa busqueda web para obtener ratings actualizados (Elo, forma, plantilla) de todas las selecciones y reemplaza los valores actuales.",
+        ):
+            try:
+                with st.spinner("Buscando datos actualizados con IA..."):
+                    updates = call_llm_ratings_update(model, st.session_state["working_df"])
+                    st.session_state["working_df"] = apply_ratings_update(
+                        st.session_state["working_df"], updates
+                    )
+                st.session_state["working_df"].to_csv(DATA_PATH, index=False)
+                load_default_data_cached.clear()
+                st.success(f"Ratings actualizados para {len(updates)} selecciones y guardados en {DATA_PATH.name}.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo actualizar los ratings: {exc}")
+    else:
+        st.caption("OPENAI_API_KEY no detectada. No es posible actualizar ratings con IA.")
 
     with st.expander("Editar ratings del modelo", expanded=False):
         st.markdown(
@@ -388,7 +414,7 @@ def render_data_editor(default_df: pd.DataFrame) -> pd.DataFrame:
             unsafe_allow_html=True,
         )
         return st.data_editor(
-            working_df,
+            st.session_state["working_df"],
             width="stretch",
             num_rows="fixed",
             column_config={
@@ -415,7 +441,7 @@ def render_app() -> None:
     st.caption(APP_CAPTION)
 
     default_df = load_default_data_cached()
-    working_df = render_data_editor(default_df)
+    working_df = render_data_editor(default_df, llm_model)
 
     try:
         csv_text = dataframe_to_csv_text(working_df)

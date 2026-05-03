@@ -106,6 +106,41 @@ def validate_team_data(df: pd.DataFrame) -> None:
         raise ValueError("The model expects 12 groups with 4 teams in each group.")
 
 
+def apply_ratings_update(base_df: pd.DataFrame, updates: pd.DataFrame) -> pd.DataFrame:
+    """Fusionar ratings actualizados del LLM en el DataFrame base.
+
+    Solo actualiza las columnas numericas clave presentes en ambos
+    DataFrames.  Los equipos del DataFrame base cuyo nombre no aparece
+    en ``updates`` conservan sus valores originales.
+
+    Parameters
+    ----------
+    base_df : pd.DataFrame
+        DataFrame original de equipos con todas las columnas del modelo.
+    updates : pd.DataFrame
+        DataFrame devuelto por ``call_llm_ratings_update`` con columna
+        ``team`` y un subconjunto de columnas de rating.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copia de ``base_df`` con las columnas de rating sobreescritas
+        para los equipos encontrados en ``updates``.
+    """
+    updatable = ["elo", "fifa_rank_proxy", "attack", "defense", "squad", "form"]
+    available = [c for c in updatable if c in updates.columns and c in base_df.columns]
+    if not available or "team" not in updates.columns:
+        return base_df.copy()
+
+    merged = base_df.copy()
+    updates_indexed = updates.set_index("team")[available]
+    for col in available:
+        col_map = updates_indexed[col]
+        mask = merged["team"].isin(col_map.index)
+        merged.loc[mask, col] = merged.loc[mask, "team"].map(col_map)
+    return merged
+
+
 def prepare_teams(df: pd.DataFrame, params: SimParams) -> dict[str, dict[str, Any]]:
     """Transformar el DataFrame de equipos en un diccionario de atributos normalizado.
 
