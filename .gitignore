@@ -1,0 +1,16 @@
+.env
+.vscode/
+.streamlit/secrets.toml
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.streamlit-server*.log
+.conda/
+env/
+venv/
+dist/
+build/
+*.egg-info/

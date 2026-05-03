@@ -1,0 +1,445 @@
+"""Componentes de la interfaz de usuario Streamlit.
+
+Contiene todas las funciones de renderizado de la aplicacion web:
+configuracion de pagina, barra lateral de parametros, pestanas de
+prediccion, grupos, descripcion del modelo, integracion LLM y editor
+de datos.  El punto de entrada principal es ``main()`` llamado desde
+``app.py``.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from dotenv import load_dotenv
+
+from wcup2026.config import (
+    APP_CAPTION,
+    APP_TITLE,
+    CHART_COLORS,
+    FIFA_GROUPS_URL,
+    FIFA_SCHEDULE_URL,
+    OPENAI_RESPONSES_URL,
+)
+from wcup2026.data import (
+    dataframe_from_csv_text,
+    dataframe_to_csv_text,
+    load_team_data,
+    validate_team_data,
+)
+from wcup2026.llm import (
+    api_key_available,
+    build_analysis_payload,
+    call_llm_analysis,
+    call_llm_news_search,
+    default_model,
+)
+from wcup2026.parameters import SimParams
+from wcup2026.simulator import describe_matchup, simulate_many
+
+
+def configure_page() -> None:
+    """Configurar la pagina Streamlit y cargar variables de entorno.
+
+    Llama a ``st.set_page_config`` con titulo e icono de la app, carga
+    el archivo ``.env`` via dotenv e inyecta los estilos CSS personalizados.
+    Debe invocarse como primera instruccion Streamlit del script.
+    """
+    st.set_page_config(page_title=APP_TITLE, page_icon="WC26", layout="wide")
+    load_dotenv()
+    inject_style()
+
+
+def inject_style() -> None:
+    """Inyectar CSS personalizado en la pagina via ``st.markdown``.
+
+    Ajusta padding del contenedor principal, estilo de las metricas,
+    tipografia de encabezados y clases utilitarias ``.source-line`` y
+    ``.small-note``.
+    """
+    st.markdown(
+        """
+        <style>
+        .block-container {padding-top: 1.25rem; padding-bottom: 2rem;}
+        [data-testid="stMetric"] {
+            border: 1px solid #3a3a3a;
+            border-radius: 8px;
+            padding: 12px 14px;
+        }
+        h1, h2, h3 {letter-spacing: 0;}
+        .source-line {
+            color: #5d6759;
+            font-size: 0.88rem;
+        }
+        .small-note {
+            color: #5d6759;
+            font-size: 0.92rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_default_data_cached() -> pd.DataFrame:
+    """Cargar los datos de equipos predeterminados con cache de Streamlit.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame leido desde ``DATA_PATH``; el resultado queda cacheado
+        para evitar lecturas de disco repetidas.
+    """
+    return load_team_data()
+
+
+@st.cache_data(show_spinner="Simulando torneos...")
+def run_simulation_cached(csv_text: str, params: SimParams) -> pd.DataFrame:
+    """Ejecutar la simulacion con cache de Streamlit.
+
+    El cache se invalida cuando cambia ``csv_text`` o ``params``, por lo
+    que cualquier edicion en los ratings o los controles laterales
+    desencadena una nueva simulacion.
+
+    Parameters
+    ----------
+    csv_text : str
+        Datos de equipos serializados como CSV (hace hashable el DataFrame).
+    params : SimParams
+        Hiperparametros de la simulacion.
+
+    Returns
+    -------
+    pd.DataFrame
+        Resultados de la simulacion (salida de ``simulate_many``).
+    """
+    df = dataframe_from_csv_text(csv_text)
+    validate_team_data(df)
+    return simulate_many(df, params)
+
+
+def render_sidebar() -> tuple[SimParams, str]:
+    """Renderizar la barra lateral con todos los controles del motor.
+
+    Expone sliders y campos para numero de simulaciones, semilla, goles
+    base, ventaja de anfitrion, ruido en eliminatorias y pesos de los
+    componentes del rating.  Tambien muestra la configuracion del LLM.
+
+    Returns
+    -------
+    tuple[SimParams, str]
+        ``(params, model)`` donde ``params`` es el ``SimParams`` construido
+        con los valores de los controles y ``model`` es el nombre del
+        modelo OpenAI configurado.
+    """
+    st.sidebar.header("Motor")
+    simulations = st.sidebar.slider("Simulaciones", 500, 50000, 5000, step=500, help="Numero de torneos simulados via Monte Carlo. Mas simulaciones = mayor precision, pero mas lento.")
+    seed = st.sidebar.number_input("Semilla", min_value=1, value=2026, step=1, help="Semilla aleatoria para reproducibilidad. El mismo valor siempre genera los mismos resultados.")
+    base_goals = st.sidebar.slider("Goles base por equipo", 0.8, 2.2, 1.35, step=0.05, help="Promedio de goles esperados por equipo en un partido completamente neutral. Ajusta el ritmo ofensivo global del torneo.")
+    home_advantage = st.sidebar.slider("Ventaja anfitrion", 0.0, 0.25, 0.10, step=0.01, help="Multiplicador adicional de goles para los equipos anfitriones (USA, Canada, Mexico). 0.10 = +10% de goles esperados.")
+    knockout_noise = st.sidebar.slider("Ruido en eliminatorias", 4.0, 18.0, 9.0, step=0.5, help="Factor de aleatoriedad en partidos eliminatorios. Valores altos favorecen sorpresas; valores bajos privilegian al mejor equipo.")
+
+    st.sidebar.header("Pesos")
+    elo_weight = st.sidebar.slider("Elo / ranking", 0.0, 1.0, 0.45, step=0.05, help="Peso del Elo/ranking FIFA en el rating compuesto de cada seleccion. Refleja historial y nivel competitivo acumulado.")
+    squad_weight = st.sidebar.slider("Plantilla", 0.0, 1.0, 0.25, step=0.05, help="Peso de la calidad del plantel (valor de mercado, profundidad). Equipos con mejor banco aguantan mejor el torneo.")
+    form_weight = st.sidebar.slider("Forma reciente", 0.0, 1.0, 0.15, step=0.05, help="Peso de los resultados recientes (ultimos 6-12 meses). Captura momentum y dinamica actual del equipo.")
+    balance_weight = st.sidebar.slider("Ataque + defensa", 0.0, 1.0, 0.15, step=0.05, help="Peso del balance tactico (ataque vs defensa). Equipos con ratings altos en ambos extremos son mas solidos.")
+
+    st.sidebar.header("LLM")
+    model = st.sidebar.text_input("Modelo OpenAI", value=default_model(), help="Nombre del modelo de OpenAI a usar para el analisis cualitativo y busqueda de noticias. Ej: gpt-4o, gpt-5.5.")
+    key_status = "detectada" if api_key_available() else "no detectada"
+    st.sidebar.caption(f"OPENAI_API_KEY: {key_status}")
+
+    params = SimParams(
+        simulations=int(simulations),
+        seed=int(seed),
+        base_goals=float(base_goals),
+        home_advantage=float(home_advantage),
+        knockout_noise=float(knockout_noise),
+        elo_weight=float(elo_weight),
+        squad_weight=float(squad_weight),
+        form_weight=float(form_weight),
+        balance_weight=float(balance_weight),
+    )
+    return params, model
+
+
+def render_probability_view(results: pd.DataFrame) -> None:
+    """Renderizar la pestana de prediccion con metricas, grafico y tabla.
+
+    Muestra cuatro metricas del favorito, un grafico de barras horizontales
+    con los 12 equipos mas probables campeones coloreados por confederacion
+    y una tabla completa con todas las probabilidades por etapa.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        DataFrame de resultados ordenado por probabilidad de campeon
+        (salida de ``simulate_many``).
+    """
+    top = results.head(12).copy()
+    favorite = results.iloc[0]
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Favorito", favorite["team"], f"{favorite['champion_pct']:.1f}% campeon", help="Equipo con mayor probabilidad de ganar el torneo segun la simulacion Monte Carlo.")
+    col2.metric("Final", favorite["team"], f"{favorite['final_pct']:.1f}%", help="Probabilidad de que el favorito llegue a la final del torneo.")
+    col3.metric("Semifinal", favorite["team"], f"{favorite['semifinal_pct']:.1f}%", help="Probabilidad de que el favorito alcance al menos las semifinales.")
+    col4.metric("Rating modelo", f"{favorite['overall']:.1f}", "0-100 relativo", help="Rating compuesto del favorito en escala 0-100. Combina Elo, plantilla, forma y balance tactico segun los pesos configurados.")
+
+    sorted_top = top.sort_values("champion_pct")
+    fig = px.bar(
+        sorted_top,
+        x="champion_pct",
+        y="team",
+        color="confederation",
+        orientation="h",
+        text=sorted_top["champion_pct"].map(lambda value: f"{value:.1f}%"),
+        labels={"champion_pct": "Probabilidad de campeon", "team": "Seleccion"},
+        color_discrete_sequence=CHART_COLORS,
+    )
+    fig.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=10))
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    st.plotly_chart(fig, width="stretch")
+
+    st.dataframe(
+        results[
+            [
+                "team",
+                "group",
+                "confederation",
+                "overall",
+                "group_winner_pct",
+                "round_of_32_pct",
+                "round_of_16_pct",
+                "quarterfinal_pct",
+                "semifinal_pct",
+                "final_pct",
+                "champion_pct",
+            ]
+        ].round(2),
+        width="stretch",
+        hide_index=True,
+    )
+
+
+def render_group_view(df: pd.DataFrame, results: pd.DataFrame) -> None:
+    """Renderizar la pestana de analisis por grupo.
+
+    Permite seleccionar un grupo, muestra la tabla de ratings y
+    probabilidades de sus equipos, y ofrece un comparador de duelo
+    directo entre dos selecciones del grupo con metricas de xG y
+    probabilidades de victoria/empate.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame original de equipos con ratings.
+    results : pd.DataFrame
+        DataFrame de resultados de la simulacion.
+    """
+    group = st.selectbox("Grupo", sorted(df["group"].unique()), help="Selecciona el grupo para ver la tabla de ratings y el comparador de duelos directos.")
+    merged = df.merge(
+        results[["team", "overall", "round_of_32_pct", "champion_pct"]],
+        on="team",
+        how="left",
+    )
+    view = merged.loc[merged["group"] == group].sort_values("overall", ascending=False)
+    st.dataframe(
+        view[
+            [
+                "team",
+                "confederation",
+                "elo",
+                "attack",
+                "defense",
+                "squad",
+                "form",
+                "overall",
+                "round_of_32_pct",
+                "champion_pct",
+            ]
+        ].round(2),
+        width="stretch",
+        hide_index=True,
+    )
+
+    teams = view["team"].tolist()
+    col1, col2 = st.columns(2)
+    team_a = col1.selectbox("Equipo A", teams, index=0, help="Primera seleccion del duelo directo simulado.")
+    team_b = col2.selectbox("Equipo B", teams, index=min(1, len(teams) - 1), help="Segunda seleccion del duelo directo simulado.")
+    if team_a != team_b:
+        params = st.session_state["params"]
+        matchup = describe_matchup(team_a, team_b, df, params, samples=6000)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric(f"Gana {team_a}", f"{matchup['team_a_win_pct']:.1f}%", help=f"Probabilidad de victoria de {team_a} en 6000 simulaciones del partido.")
+        c2.metric("Empate", f"{matchup['draw_pct']:.1f}%", help="Probabilidad de empate al final del tiempo reglamentario.")
+        c3.metric(f"Gana {team_b}", f"{matchup['team_b_win_pct']:.1f}%", help=f"Probabilidad de victoria de {team_b} en 6000 simulaciones del partido.")
+        c4.metric("xG", f"{matchup['team_a_xg']:.2f} - {matchup['team_b_xg']:.2f}", help="Goles esperados promedio (xG) para cada equipo segun sus ratings de ataque y defensa.")
+
+
+def render_model_view() -> None:
+    """Renderizar la pestana de descripcion del modelo.
+
+    Muestra texto explicativo sobre el funcionamiento del simulador,
+    criterios de desempate, logica de eliminatorias y enlaces a las
+    fuentes de datos oficiales de FIFA y OpenAI.
+    """
+    st.subheader("Como piensa el modelo")
+    st.markdown(
+        """
+        - Cada seleccion tiene rating de ataque, defensa, plantilla, forma y Elo aproximado.
+        - Cada partido se simula con goles Poisson a partir de ataque vs defensa y rating global.
+        - La fase de grupos usa puntos, diferencia de goles, goles a favor y rating como desempate final.
+        - Avanzan dos primeros de cada grupo y los ocho mejores terceros.
+        - La ronda de 32 sigue el calendario FIFA; la asignacion de terceros usa las ventanas de grupos publicadas por FIFA.
+        - Las eliminatorias se deciden por marcador simulado; si hay empate, se usa una probabilidad de prorroga/penales basada en rating.
+        """
+    )
+    st.markdown(
+        f"""
+        <div class="source-line">
+        Fuentes base:
+        <a href="{FIFA_GROUPS_URL}" target="_blank">grupos FIFA</a>,
+        <a href="{FIFA_SCHEDULE_URL}" target="_blank">calendario FIFA</a>,
+        <a href="{OPENAI_RESPONSES_URL}" target="_blank">OpenAI Responses API</a>.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.info(
+        "Los ratings del CSV son semillas editables, no una verdad oficial. La gracia del MVP es que puedas calibrarlos con datos mejores: Elo actualizado, lesiones, valor de mercado, minutos jugados y resultados recientes."
+    )
+
+
+def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None:
+    """Renderizar la pestana de integracion LLM.
+
+    Muestra ideas de uso del LLM, un area de texto para ingresar
+    informacion cualitativa y un boton para generar el analisis.  Si la
+    clave de API no esta disponible muestra una advertencia en su lugar.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        DataFrame de resultados de la simulacion.
+    df : pd.DataFrame
+        DataFrame original de equipos con ratings.
+    model : str
+        Nombre del modelo OpenAI a usar en la llamada.
+    """
+    st.subheader("LLM en la ecuacion")
+
+    if not api_key_available():
+        st.warning("No detecte OPENAI_API_KEY en el entorno. Revisa que el archivo .env este en esta carpeta.")
+        return
+
+    if st.button("Buscar noticias", help="Consulta al LLM por lesiones y contexto relevante de los equipos"):
+        try:
+            with st.spinner("Buscando noticias relevantes..."):
+                st.session_state["llm_notes"] = call_llm_news_search(model, df)
+        except Exception as exc:  # pragma: no cover - UI guardrail
+            st.error(f"No se pudo obtener noticias: {exc}")
+
+    notes = st.text_area(
+        "Escenario o informacion cualitativa",
+        placeholder="Ejemplo: Francia llega sin su lateral titular; Mexico juega con presion local; Uruguay trae buena racha defensiva.",
+        height=180,
+        key="llm_notes",
+        help="Agrega contexto que el modelo cuantitativo no captura: lesiones, suspensiones, clima, rivalidades, rotaciones o escenarios hipoteticos. Puedes editarlo libremente despues de usar 'Buscar noticias'.",
+    )
+
+    if st.button("Generar analisis LLM", type="primary", help="Envia los resultados de la simulacion y el escenario cualitativo al LLM para obtener un analisis integrado con recomendaciones accionables."):
+        payload = build_analysis_payload(results, df, notes)
+        try:
+            with st.spinner("Consultando al LLM..."):
+                st.session_state["llm_answer"] = call_llm_analysis(model, payload)
+        except Exception as exc:  # pragma: no cover - UI guardrail
+            st.error(f"No se pudo consultar el LLM: {exc}")
+
+    if st.session_state.get("llm_answer"):
+        st.markdown(st.session_state["llm_answer"])
+
+
+def render_data_editor(default_df: pd.DataFrame) -> pd.DataFrame:
+    """Renderizar el editor de ratings y el uploader de CSV personalizado.
+
+    Permite al usuario cargar su propio CSV o editar directamente los
+    valores de ataque, defensa, plantilla y forma en una tabla interactiva.
+
+    Parameters
+    ----------
+    default_df : pd.DataFrame
+        DataFrame predeterminado que se muestra si el usuario no carga un
+        archivo propio.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame con los ratings (posiblemente editados) que se usa para
+        la simulacion.
+    """
+    uploaded = st.file_uploader("Carga un CSV propio de ratings", type=["csv"], help="Sube tu propio archivo CSV con ratings personalizados. Debe tener las mismas columnas que el dataset base.")
+    working_df = pd.read_csv(uploaded) if uploaded is not None else default_df.copy()
+
+    with st.expander("Editar ratings del modelo", expanded=False):
+        st.markdown(
+            '<div class="small-note">Edita valores de 0 a 100 para ataque, defensa, plantilla y forma. Luego vuelve a correr la simulacion.</div>',
+            unsafe_allow_html=True,
+        )
+        return st.data_editor(
+            working_df,
+            width="stretch",
+            num_rows="fixed",
+            column_config={
+                "is_host": st.column_config.CheckboxColumn("is_host", help="Marca si el equipo es uno de los tres anfitriones del torneo (USA, Canada, Mexico)."),
+                "attack": st.column_config.NumberColumn("attack", min_value=0, max_value=100, help="Potencial ofensivo del equipo (0-100). Afecta los goles esperados generados."),
+                "defense": st.column_config.NumberColumn("defense", min_value=0, max_value=100, help="Solidez defensiva del equipo (0-100). Reduce los goles esperados del rival."),
+                "squad": st.column_config.NumberColumn("squad", min_value=0, max_value=100, help="Calidad y profundidad del plantel (0-100). Equipos con mejor banco aguantan mejor torneos largos."),
+                "form": st.column_config.NumberColumn("form", min_value=0, max_value=100, help="Forma reciente del equipo (0-100). Refleja los resultados de los ultimos 6-12 meses."),
+            },
+        )
+
+
+def render_app() -> None:
+    """Orquestar el flujo principal de la aplicacion Streamlit.
+
+    Llama a todos los componentes de renderizado en orden: barra lateral,
+    titulo, editor de datos, ejecucion de la simulacion y las cuatro
+    pestanas de contenido (Prediccion, Grupos, Modelo, LLM).
+    """
+    params, llm_model = render_sidebar()
+    st.session_state["params"] = params
+
+    st.title(APP_TITLE)
+    st.caption(APP_CAPTION)
+
+    default_df = load_default_data_cached()
+    working_df = render_data_editor(default_df)
+
+    try:
+        csv_text = dataframe_to_csv_text(working_df)
+        results = run_simulation_cached(csv_text, params)
+    except Exception as exc:
+        st.error(f"No se pudo correr la simulacion: {exc}")
+        st.stop()
+
+    tab_pred, tab_groups, tab_model, tab_llm = st.tabs(["Prediccion", "Grupos", "Modelo", "LLM"])
+    with tab_pred:
+        render_probability_view(results)
+    with tab_groups:
+        render_group_view(working_df, results)
+    with tab_model:
+        render_model_view()
+    with tab_llm:
+        render_llm_view(results, working_df, llm_model)
+
+
+def main() -> None:
+    """Punto de entrada de la aplicacion Streamlit.
+
+    Configura la pagina y lanza el renderizado completo de la app.  Es
+    invocado por ``app.py`` al ejecutar ``streamlit run app.py``.
+    """
+    configure_page()
+    render_app()
