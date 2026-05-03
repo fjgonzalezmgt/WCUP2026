@@ -31,14 +31,14 @@ Aplicacion Streamlit para simular el Mundial 2026 combinando **simulacion Monte 
 
 ```mermaid
 flowchart TD
-    U([Usuario]) --> A[Pulsa &quot;Buscar noticias&quot;]
+    U([Usuario]) --> A["Pulsa 'Buscar noticias'"]
     A --> B["call_llm_news_search()"]
     B --> C["OpenAI Responses API\n+ web_search tool"]
     C --> D["Noticias: lesiones, bajas,\nconvocatorias, forma reciente"]
     D --> E["Pre-carga el campo\nde notas cualitativos"]
 
-    E --> F[Ajusta notas manualmente\n&#40;opcional&#41;]
-    F --> G[Pulsa &quot;Analizar con LLM&quot;]
+    E --> F["Ajusta notas manualmente (opcional)"]
+    F --> G["Pulsa 'Analizar con LLM'"]
     G --> H["call_llm_analysis()"]
 
     subgraph payload [Payload enviado al LLM]
