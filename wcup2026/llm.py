@@ -20,10 +20,49 @@ LLM_INSTRUCTIONS = (
     "Eres un analista cuantitativo de futbol. Usa solo el contexto entregado. "
     "Separa claramente lo que sale del modelo de lo que son riesgos cualitativos. "
     "No inventes lesiones, convocatorias ni noticias. Responde en espanol claro, "
-    "con bullets cortos y conclusiones firmes. No recomiendes ajustes de pesos, "
-    "ratings ni variables internas del modelo; traduce cualquier senal cualitativa "
-    "a implicaciones deportivas concretas y escenarios cerrados."
+    "con bullets cortos y conclusiones firmes. Abre siempre con una seccion titulada "
+    "'## Veredicto final', sin numeracion ni prefijos. En esa seccion entrega un bloque "
+    "conclusivo de 8 a 10 bullets con etiquetas de este estilo: Favorito de mayor techo, "
+    "Favoritos mas confiables hoy, Mejor perseguidor, Grande mas vulnerable, Outsider mas "
+    "peligroso del modelo, Infravalorado mas solido, Equipo trampa, Candidato de sorpresa "
+    "fuerte, Marca grande con mas volatilidad y Outsider que pierde fuerza por contexto "
+    "fisico. Ese veredicto final debe mezclar desde el inicio lo que dice el modelo con lo "
+    "que cambia por el contexto cualitativo; no presentes primero una lectura puramente "
+    "estadistica y luego otra separada. Despues agrega un parrafo breve que empiece "
+    "exactamente con 'Conclusion firme:' y sintetice la tesis central integrada. Luego "
+    "explica como llegaste ahi en secciones separadas: primero '## Lo que dice el modelo', "
+    "despues '## Ajustes cualitativos' y al final '## Escenarios'. "
+    "No recomiendes ajustes de pesos, ratings ni variables internas del modelo; "
+    "traduce cualquier senal cualitativa a implicaciones deportivas concretas y "
+    "escenarios cerrados."
 )
+
+
+def _extract_response_text(response: Any) -> str:
+    """Obtener texto legible de una respuesta de OpenAI Responses API.
+
+    Algunas versiones del SDK exponen ``output_text`` vacio aunque el
+    contenido exista dentro de ``response.output``. Esta funcion intenta
+    ambas rutas para evitar respuestas invisibles en la UI.
+    """
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    fragments: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            text_value = getattr(content, "text", None)
+            if isinstance(text_value, str) and text_value.strip():
+                fragments.append(text_value.strip())
+                continue
+
+            for part in getattr(content, "annotations", []) or []:
+                annotation_text = getattr(part, "text", None)
+                if isinstance(annotation_text, str) and annotation_text.strip():
+                    fragments.append(annotation_text.strip())
+
+    return "\n\n".join(fragments).strip()
 
 
 def api_key_available() -> bool:
@@ -85,11 +124,19 @@ def build_analysis_payload(results: pd.DataFrame, teams: pd.DataFrame, notes: st
         "user_scenario": notes,
         "request": (
             "Entrega un analisis mas concluyente y menos tecnico. "
-            "Resume favoritos, riesgos del modelo y como cambia la lectura competitiva "
-            "con el contexto cualitativo. "
-            "Cierra con veredictos accionables: quien sube, quien baja, quien esta "
-            "sobrevalorado o infravalorado y cuales serian los escenarios base, "
-            "conservador y optimista. "
+            "Empieza obligatoriamente con una seccion markdown titulada '## Veredicto final', "
+            "sin numeracion. En esa seccion entrega 8 a 10 bullets conclusivos con etiquetas "
+            "claras del tipo del ejemplo: favorito de mayor techo, favoritos mas confiables hoy, "
+            "mejor perseguidor, grande mas vulnerable, outsider mas peligroso del modelo, "
+            "infravalorado mas solido, equipo trampa, candidato de sorpresa fuerte, marca grande "
+            "con mas volatilidad y outsider que pierde fuerza por contexto fisico. "
+            "Esos bullets deben incorporar ya la lectura combinada entre resultados del modelo y "
+            "analisis cualitativo. "
+            "Despues escribe un parrafo corto que empiece exactamente con 'Conclusion firme:' "
+            "y cierre la tesis principal. Luego explica paso a paso como llegas a ese veredicto "
+            "en tres secciones: '## Lo que dice el modelo', '## Ajustes cualitativos' y "
+            "'## Escenarios'. En la ultima seccion cierra con los escenarios base, conservador "
+            "y optimista. "
             "No recomiendes ajustes de pesos, ratings, variables ni escalas numericas "
             "del modelo."
         ),
@@ -157,7 +204,7 @@ def call_llm_news_search(model: str, teams: pd.DataFrame) -> str:
         ),
         input=prompt,
     )
-    return response.output_text
+    return _extract_response_text(response)
 
 
 def _extract_json(text: str) -> Any:
@@ -291,7 +338,7 @@ def call_llm_ratings_update(model: str, teams: pd.DataFrame) -> pd.DataFrame:
         input=prompt,
     )
 
-    data = _extract_json(response.output_text)
+    data = _extract_json(_extract_response_text(response))
     ratings_list = data.get("ratings", data) if isinstance(data, dict) else data
     return pd.DataFrame(ratings_list)
 
@@ -324,4 +371,4 @@ def call_llm_analysis(model: str, payload: dict[str, Any]) -> str:
         instructions=LLM_INSTRUCTIONS,
         input=json.dumps(payload, ensure_ascii=True),
     )
-    return response.output_text
+    return _extract_response_text(response)

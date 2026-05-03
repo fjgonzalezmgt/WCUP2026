@@ -405,13 +405,17 @@ def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None
             payload = build_analysis_payload(results, df, notes)
             try:
                 with st.spinner("Consultando al LLM..."):
-                    st.session_state["llm_answer"] = call_llm_analysis(model, payload)
+                    st.session_state["llm_answer"] = call_llm_analysis(model, payload).strip()
             except Exception as exc:  # pragma: no cover - UI guardrail
                 st.error(f"No se pudo consultar el LLM: {exc}")
 
-    if st.session_state.get("llm_answer"):
-        render_copy_button(st.session_state["llm_answer"], key="analysis")
-        st.markdown(st.session_state["llm_answer"])
+    if "llm_answer" in st.session_state:
+        answer = st.session_state["llm_answer"]
+        if answer:
+            render_copy_button(answer, key="analysis")
+            st.markdown(answer)
+        else:
+            st.warning("El LLM respondio sin texto visible. Revisa el modelo configurado o intenta de nuevo.")
 
 
 def render_data_editor(default_df: pd.DataFrame, model: str) -> pd.DataFrame:
