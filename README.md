@@ -29,17 +29,31 @@ Aplicacion Streamlit para simular el Mundial 2026 combinando **simulacion Monte 
 
 ## Flujo LLM
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Usuario                              │
-│  1. Pulsa "Buscar noticias"  →  call_llm_news_search()      │
-│     OpenAI web_search busca lesiones, bajas y forma reciente│
-│     Resultado se pre-carga en el campo de notas             │
-│                                                             │
-│  2. Pulsa "Analizar con LLM"  →  call_llm_analysis()        │
-│     Payload: top-12 modelo + ratings + notas del usuario    │
-│     LLM devuelve analisis narrativo con bullets accionables │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    U([Usuario]) --> A[Pulsa &quot;Buscar noticias&quot;]
+    A --> B["call_llm_news_search()"]
+    B --> C["OpenAI Responses API\n+ web_search tool"]
+    C --> D["Noticias: lesiones, bajas,\nconvocatorias, forma reciente"]
+    D --> E["Pre-carga el campo\nde notas cualitativos"]
+
+    E --> F[Ajusta notas manualmente\n&#40;opcional&#41;]
+    F --> G[Pulsa &quot;Analizar con LLM&quot;]
+    G --> H["call_llm_analysis()"]
+
+    subgraph payload [Payload enviado al LLM]
+        P1["Top-12 del modelo\n(probabilidades por ronda)"]
+        P2["Ratings de los 48 equipos\n(ataque, defensa, forma…)"]
+        P3["Notas del usuario\n(noticias + escenarios)"]
+    end
+
+    H --> payload
+    payload --> I["GPT — analisis narrativo"]
+    I --> J["Favoritos · Riesgos · Ajustes\nsugeridos con rangos numéricos"]
+
+    style C fill:#412991,color:#fff
+    style I fill:#412991,color:#fff
+    style payload fill:#f0f4ff,stroke:#412991
 ```
 
 La novedad respecto a modelos clasicos es que **el LLM no solo interpreta salidas estadisticas**, sino que tambien **recupera contexto real actualizado** (noticias, convocatorias, sanciones) usando `web_search` de la Responses API, unificando informacion cuantitativa y cualitativa en un solo flujo.
