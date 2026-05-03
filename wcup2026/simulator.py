@@ -20,6 +20,12 @@ from wcup2026.data import prepare_teams
 from wcup2026.parameters import SimParams
 
 
+ATTACK_DEFENSE_EDGE_SCALE = 60.0
+OVERALL_EDGE_SCALE = 180.0
+KNOCKOUT_TIEBREAK_MIN_PROB = 0.25
+KNOCKOUT_TIEBREAK_MAX_PROB = 0.75
+
+
 def expected_goals(
     team_a: str,
     team_b: str,
@@ -29,8 +35,10 @@ def expected_goals(
     """Calcular los goles esperados (lambda de Poisson) para cada equipo.
 
     Combina la diferencia de poder de ataque vs. defensa con la diferencia
-    de rating global y aplica una bonificacion de anfitrion.  Los lambdas
-    resultantes se recortan al rango [0.18, 4.2].
+    de rating global y aplica una bonificacion de anfitrion.  Las escalas
+    estan deliberadamente suavizadas para evitar que pequenas ventajas de
+    rating se acumulen en probabilidades de campeon demasiado extremas. Los
+    lambdas resultantes se recortan al rango [0.18, 4.2].
 
     Parameters
     ----------
@@ -53,8 +61,14 @@ def expected_goals(
     host_a = params.home_advantage if a["is_host"] else 0.0
     host_b = params.home_advantage if b["is_host"] else 0.0
 
-    a_edge = (a["attack_power"] - b["defense_power"]) / 38 + (a["overall"] - b["overall"]) / 95
-    b_edge = (b["attack_power"] - a["defense_power"]) / 38 + (b["overall"] - a["overall"]) / 95
+    a_edge = (
+        (a["attack_power"] - b["defense_power"]) / ATTACK_DEFENSE_EDGE_SCALE
+        + (a["overall"] - b["overall"]) / OVERALL_EDGE_SCALE
+    )
+    b_edge = (
+        (b["attack_power"] - a["defense_power"]) / ATTACK_DEFENSE_EDGE_SCALE
+        + (b["overall"] - a["overall"]) / OVERALL_EDGE_SCALE
+    )
 
     lam_a = params.base_goals * np.exp(a_edge + host_a)
     lam_b = params.base_goals * np.exp(b_edge + host_b)
@@ -74,7 +88,9 @@ def simulate_match(
     Sortea goles con distribucion Poisson.  En fase de grupos el partido
     puede terminar en empate (``winner=None``).  En eliminatorias, si los
     goles son iguales, se decide mediante una probabilidad logistica basada
-    en el rating con ruido gaussiano.
+    en el rating con ruido gaussiano.  Esa probabilidad se limita entre 25%
+    y 75% para reflejar que un empate en eliminatoria ya implica un alto
+    componente de azar en prorroga o penales.
 
     Parameters
     ----------
@@ -111,6 +127,7 @@ def simulate_match(
         diff = teams[team_a]["overall"] - teams[team_b]["overall"]
         diff += params.knockout_noise * rng.normal(0, 0.18)
         prob_a = 1 / (1 + np.exp(-diff / max(1.0, params.knockout_noise)))
+        prob_a = float(np.clip(prob_a, KNOCKOUT_TIEBREAK_MIN_PROB, KNOCKOUT_TIEBREAK_MAX_PROB))
         winner = team_a if rng.random() < prob_a else team_b
 
     return {
@@ -617,4 +634,3 @@ def describe_matchup(
         "team_a_xg": goals_a / samples,
         "team_b_xg": goals_b / samples,
     }
-

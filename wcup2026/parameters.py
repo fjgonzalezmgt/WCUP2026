@@ -45,9 +45,8 @@ class SimParams:
     seed: int = 2026
     base_goals: float = 1.35
     home_advantage: float = 0.10
-    knockout_noise: float = 9.0
+    knockout_noise: float = 18.0
     elo_weight: float = 0.45
     squad_weight: float = 0.25
     form_weight: float = 0.15
     balance_weight: float = 0.15
-

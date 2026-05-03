@@ -20,7 +20,9 @@ LLM_INSTRUCTIONS = (
     "Eres un analista cuantitativo de futbol. Usa solo el contexto entregado. "
     "Separa claramente lo que sale del modelo de lo que son riesgos cualitativos. "
     "No inventes lesiones, convocatorias ni noticias. Responde en espanol claro, "
-    "con bullets cortos y recomendaciones accionables."
+    "con bullets cortos y conclusiones firmes. No recomiendes ajustes de pesos, "
+    "ratings ni variables internas del modelo; traduce cualquier senal cualitativa "
+    "a implicaciones deportivas concretas y escenarios cerrados."
 )
 
 
@@ -82,8 +84,14 @@ def build_analysis_payload(results: pd.DataFrame, teams: pd.DataFrame, notes: st
         ].to_dict(orient="records"),
         "user_scenario": notes,
         "request": (
-            "Resume favoritos, riesgos del modelo y ajustes cualitativos sugeridos. "
-            "Si propones cambiar variables, usa rangos pequenos en puntos: -5 a +5."
+            "Entrega un analisis mas concluyente y menos tecnico. "
+            "Resume favoritos, riesgos del modelo y como cambia la lectura competitiva "
+            "con el contexto cualitativo. "
+            "Cierra con veredictos accionables: quien sube, quien baja, quien esta "
+            "sobrevalorado o infravalorado y cuales serian los escenarios base, "
+            "conservador y optimista. "
+            "No recomiendes ajustes de pesos, ratings, variables ni escalas numericas "
+            "del modelo."
         ),
     }
 
