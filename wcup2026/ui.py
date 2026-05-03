@@ -9,9 +9,13 @@ de datos.  El punto de entrada principal es ``main()`` llamado desde
 
 from __future__ import annotations
 
+import html
+import json
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from wcup2026.config import (
@@ -83,6 +87,48 @@ def inject_style() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_copy_button(text: str, key: str) -> None:
+        """Renderizar un boton para copiar texto al portapapeles del navegador."""
+        button_id = f"copy-llm-{key}"
+        status_id = f"copy-llm-status-{key}"
+        payload = json.dumps(text)
+        button_label = html.escape("Copiar analisis")
+        components.html(
+                f"""
+                <div style="display:flex; justify-content:flex-end; margin:0 0 0.5rem 0;">
+                    <button
+                        id="{button_id}"
+                        type="button"
+                        style="border:1px solid #d0d7de; border-radius:0.5rem; background:#f6f8fa; color:#24292f; padding:0.4rem 0.8rem; font-size:0.9rem; cursor:pointer;"
+                    >
+                        {button_label}
+                    </button>
+                    <span id="{status_id}" style="margin-left:0.5rem; font-size:0.85rem; color:#57606a;"></span>
+                </div>
+                <script>
+                const copyButton = document.getElementById({json.dumps(button_id)});
+                const status = document.getElementById({json.dumps(status_id)});
+                const text = {payload};
+
+                copyButton?.addEventListener('click', async () => {{
+                    try {{
+                        await navigator.clipboard.writeText(text);
+                        if (status) {{
+                            status.textContent = 'Copiado';
+                            setTimeout(() => {{ status.textContent = ''; }}, 2000);
+                        }}
+                    }} catch (error) {{
+                        if (status) {{
+                            status.textContent = 'No se pudo copiar';
+                        }}
+                    }}
+                }});
+                </script>
+                """,
+                height=42,
+        )
 
 
 @st.cache_data(show_spinner=False)
@@ -364,6 +410,7 @@ def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None
                 st.error(f"No se pudo consultar el LLM: {exc}")
 
     if st.session_state.get("llm_answer"):
+        render_copy_button(st.session_state["llm_answer"], key="analysis")
         st.markdown(st.session_state["llm_answer"])
 
 
