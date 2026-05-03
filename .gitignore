@@ -17,3 +17,5 @@ reporte/*
 dist/
 build/
 *.egg-info/
+*.csv
+*.lnk
