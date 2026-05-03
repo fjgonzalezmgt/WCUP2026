@@ -172,20 +172,3 @@ WCUP2026/
 ---
 
 *Desarrollado por **Francisco Gonzalez** para **Quality Analytics** · 2026*
-
----
-
-## Fuentes
-
-| Recurso | URL |
-|---|---|
-| FIFA Final Draw 2026 | https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/articles/final-draw-results |
-| FIFA Match Schedule | https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/articles/match-schedule-fixtures-results-teams-stadiums |
-| FiveThirtyEight — metodologia Mundial | https://fivethirtyeight.com/features/how-our-2022-world-cup-predictions-work/ |
-| Alan Turing Institute — modelo 2022 | https://www.turing.ac.uk/blog/can-our-algorithm-predict-winner-2022-football-world-cup |
-| Opta Analyst — predicciones 2022 | https://theanalyst.com/articles/who-will-win-the-2022-fifa-world-cup-predictions |
-| OpenAI Responses API | https://platform.openai.com/docs/api-reference/responses |
-
----
-
-*Desarrollado por **Francisco Gonzalez** para **Quality Analytics** · 2026*
