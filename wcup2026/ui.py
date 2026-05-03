@@ -353,12 +353,15 @@ def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None
     )
 
     if st.button("Generar analisis LLM", type="primary", help="Envia los resultados de la simulacion y el escenario cualitativo al LLM para obtener un analisis integrado con recomendaciones accionables."):
-        payload = build_analysis_payload(results, df, notes)
-        try:
-            with st.spinner("Consultando al LLM..."):
-                st.session_state["llm_answer"] = call_llm_analysis(model, payload)
-        except Exception as exc:  # pragma: no cover - UI guardrail
-            st.error(f"No se pudo consultar el LLM: {exc}")
+        if results is None:
+            st.warning("Primero pulsa **Simular torneo** para tener resultados que analizar.")
+        else:
+            payload = build_analysis_payload(results, df, notes)
+            try:
+                with st.spinner("Consultando al LLM..."):
+                    st.session_state["llm_answer"] = call_llm_analysis(model, payload)
+            except Exception as exc:  # pragma: no cover - UI guardrail
+                st.error(f"No se pudo consultar el LLM: {exc}")
 
     if st.session_state.get("llm_answer"):
         st.markdown(st.session_state["llm_answer"])
@@ -443,22 +446,35 @@ def render_app() -> None:
     default_df = load_default_data_cached()
     working_df = render_data_editor(default_df, llm_model)
 
-    try:
-        csv_text = dataframe_to_csv_text(working_df)
-        results = run_simulation_cached(csv_text, params)
-    except Exception as exc:
-        st.error(f"No se pudo correr la simulacion: {exc}")
-        st.stop()
+    if st.button("Simular torneo", type="primary", help="Ejecuta la simulacion Monte Carlo con los ratings y parametros actuales."):
+        try:
+            csv_text = dataframe_to_csv_text(working_df)
+            st.session_state["simulation_results"] = run_simulation_cached(csv_text, params)
+            st.session_state["simulation_df"] = working_df.copy()
+        except Exception as exc:
+            st.error(f"No se pudo correr la simulacion: {exc}")
+
+    results = st.session_state.get("simulation_results")
+    sim_df = st.session_state.get("simulation_df", working_df)
 
     tab_pred, tab_groups, tab_model, tab_llm = st.tabs(["Prediccion", "Grupos", "Modelo", "LLM"])
     with tab_pred:
-        render_probability_view(results)
+        if results is None:
+            st.info("Pulsa **Simular torneo** para ver las predicciones.")
+        else:
+            render_probability_view(results)
     with tab_groups:
-        render_group_view(working_df, results)
+        if results is None:
+            st.info("Pulsa **Simular torneo** para ver el analisis por grupos.")
+        else:
+            render_group_view(sim_df, results)
     with tab_model:
         render_model_view()
     with tab_llm:
-        render_llm_view(results, working_df, llm_model)
+        if results is None:
+            render_llm_view(None, sim_df, llm_model)
+        else:
+            render_llm_view(results, sim_df, llm_model)
 
 
 def main() -> None:
