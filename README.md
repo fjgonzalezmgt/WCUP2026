@@ -30,13 +30,19 @@ Aplicación de Streamlit para simular el Mundial 2026 combinando **simulación M
 
 ## Flujo de uso
 
-```
-1. (Opcional) Actualizar ratings con IA  →  guarda teams_seed.csv actualizado
-2. (Opcional) Editar ratings manualmente en la tabla
-3. Configurar parámetros en la barra lateral
-4. Pulsar "Simular torneo"  →  Monte Carlo lanza el cálculo
-5. Explorar pestañas: Predicción · Grupos · Modelo · LLM
-6. (Opcional) Buscar noticias y generar análisis LLM
+```mermaid
+flowchart LR
+    A([Inicio]) --> B["① Actualizar ratings\ncon IA (opcional)"]
+    B --> C["② Editar ratings\nmanualmente (opcional)"]
+    C --> D["③ Configurar parámetros\nen la barra lateral"]
+    D --> E["④ Pulsar\n'Simular torneo'"]
+    E --> F["⑤ Explorar pestañas\nPredicción · Grupos · Modelo · LLM"]
+    F --> G["⑥ Buscar noticias y\ngenerar análisis LLM (opcional)"]
+    G --> H([Resultados])
+
+    style B fill:#412991,color:#fff
+    style E fill:#e03030,color:#fff
+    style G fill:#412991,color:#fff
 ```
 
 ---
@@ -78,6 +84,179 @@ flowchart TD
 ```
 
 La novedad frente a modelos clásicos es que **el LLM no solo interpreta salidas estadísticas**, sino que también **recupera y actualiza datos reales** (ratings, noticias, convocatorias y sanciones) usando `web_search` de la Responses API, unificando información cuantitativa y cualitativa en un solo flujo.
+
+---
+
+## Arquitectura de módulos
+
+```mermaid
+graph TD
+    APP["app.py\nPunto de entrada"]
+
+    subgraph UI["Capa de presentación"]
+        ui["ui.py\nComponentes Streamlit"]
+    end
+
+    subgraph Core["Núcleo del simulador"]
+        sim["simulator.py\nMonte Carlo · Poisson"]
+        brk["bracket.py\nCuadro de eliminación"]
+        params["parameters.py\nHiperparámetros"]
+    end
+
+    subgraph Data["Capa de datos"]
+        data["data.py\nLectura · Validación · Prep."]
+        cfg["config.py\nRutas · Grupos · Columnas"]
+        csv[("data/\nteams_seed.csv")]
+    end
+
+    subgraph AI["Capa de inteligencia artificial"]
+        llm["llm.py\nOpenAI Responses API"]
+    end
+
+    subgraph Out["Salida"]
+        rep["report.py\nInforme LaTeX/PDF"]
+        per["persistence.py\nEstado de sesión"]
+    end
+
+    APP --> ui
+    ui --> sim
+    ui --> llm
+    ui --> data
+    ui --> per
+    sim --> brk
+    sim --> data
+    sim --> params
+    data --> cfg
+    data --> csv
+    llm --> csv
+    ui --> rep
+
+    style APP fill:#e03030,color:#fff
+    style sim fill:#1a73e8,color:#fff
+    style llm fill:#412991,color:#fff
+    style csv fill:#0b8043,color:#fff
+```
+
+---
+
+## Flujo de simulación Monte Carlo
+
+```mermaid
+flowchart TD
+    START(["Inicio simulación\n(N iteraciones)"]) --> LOAD["Cargar y preparar\nratings de equipos"]
+    LOAD --> GS
+
+    subgraph GS["Fase de grupos (12 grupos)"]
+        G1["Calcular λ Poisson\npor partido"] --> G2["Sortear goles\nPoisson(λA), Poisson(λB)"]
+        G2 --> G3["Acumular puntos\ny diferencia de goles"]
+        G3 --> G4["Clasificar: 1°, 2° y 3°\npor grupo"]
+    end
+
+    GS --> THIRD["Asignar mejores 8\nterceros al cuadro R32"]
+    THIRD --> KO
+
+    subgraph KO["Fase eliminatoria"]
+        R32["Ronda de 32\n(16 partidos)"] --> R16["Ronda de 16\n(8 partidos)"]
+        R16 --> QF["Cuartos de final\n(4 partidos)"]
+        QF --> SF["Semifinales\n(2 partidos)"]
+        SF --> FIN["Final\n(1 partido)"]
+    end
+
+    KO --> ACC["Acumular resultado\nen contadores"]
+    ACC --> NEXT{{"¿Quedan\niteraciones?"}}
+    NEXT -- Sí --> GS
+    NEXT -- No --> PROBA["Calcular probabilidades\npor ronda ÷ N"]
+    PROBA --> VIZ["Visualizar en\nStreamlit (Plotly)"]
+
+    style START fill:#e03030,color:#fff
+    style PROBA fill:#1a73e8,color:#fff
+    style VIZ fill:#0b8043,color:#fff
+```
+
+---
+
+## Cálculo de goles esperados (Poisson)
+
+```mermaid
+flowchart LR
+    ATK_A["attack_power(A)"]
+    DEF_B["defense_power(B)"]
+    OVR_A["overall(A)"]
+    OVR_B["overall(B)"]
+    HOST["is_host(A/B)\n+home_advantage"]
+
+    ATK_A & DEF_B --> EDGE_A["a_edge = (ATK_A − DEF_B)/60\n       + (OVR_A − OVR_B)/180"]
+    OVR_A & OVR_B --> EDGE_A
+    HOST --> LAM_A
+
+    EDGE_A --> LAM_A["λA = base_goals × exp(a_edge + host_A)\nclip[0.18 , 4.2]"]
+    EDGE_A --> LAM_B["λB = base_goals × exp(b_edge + host_B)\nclip[0.18 , 4.2]"]
+
+    LAM_A --> DRAW{{"λA == λB\nen eliminatoria?"}}
+    LAM_B --> DRAW
+    DRAW -- No --> WIN["Ganador = más goles"]
+    DRAW -- Sí --> LOGIT["Probabilidad logística\n+ ruido gaussiano\nclip[0.25 , 0.75]"]
+    LOGIT --> WIN
+
+    style LAM_A fill:#1a73e8,color:#fff
+    style LAM_B fill:#1a73e8,color:#fff
+    style LOGIT fill:#e03030,color:#fff
+```
+
+---
+
+## Estructura del cuadro eliminatorio FIFA 2026
+
+```mermaid
+flowchart LR
+    subgraph G["12 Grupos (A–L)"]
+        GRP["1°×12 · 2°×12\nmejores 3°×8"]
+    end
+
+    subgraph R32["Ronda de 32 (16 partidos)"]
+        M73["73: 2A vs 2B"] & M74["74: 1E vs 3°"] & M75["75: 1F vs 2C"] & M76["76: 1C vs 2F"]
+        M77["77: 1I vs 3°"] & M78["78: 2E vs 2I"] & M79["79: 1A vs 3°"] & M80["80: 1L vs 3°"]
+        M81["81: 1D vs 3°"] & M82["82: 1G vs 3°"] & M83["83: 2K vs 2L"] & M84["84: 1H vs 2J"]
+        M85["85: 1B vs 3°"] & M86["86: 1J vs 2H"] & M87["87: 1K vs 3°"] & M88["88: 2D vs 2G"]
+    end
+
+    subgraph R16["Ronda de 16 (8 partidos)"]
+        M89["89"] & M90["90"] & M91["91"] & M92["92"]
+        M93["93"] & M94["94"] & M95["95"] & M96["96"]
+    end
+
+    subgraph QF["Cuartos (4 partidos)"]
+        M97["97"] & M98["98"] & M99["99"] & M100["100"]
+    end
+
+    subgraph SF["Semis (2 partidos)"]
+        M101["101"] & M102["102"]
+    end
+
+    FIN["104\nFinal"]
+    CHAMP(["🏆 Campeón"])
+
+    GRP --> R32
+    M74 & M77 --> M89
+    M73 & M75 --> M90
+    M76 & M78 --> M91
+    M79 & M80 --> M92
+    M83 & M84 --> M93
+    M81 & M82 --> M94
+    M86 & M88 --> M95
+    M85 & M87 --> M96
+    M89 & M90 --> M97
+    M93 & M94 --> M98
+    M91 & M92 --> M99
+    M95 & M96 --> M100
+    M97 & M98 --> M101
+    M99 & M100 --> M102
+    M101 & M102 --> FIN
+    FIN --> CHAMP
+
+    style CHAMP fill:#0b8043,color:#fff
+    style FIN fill:#e03030,color:#fff
+```
 
 ---
 
