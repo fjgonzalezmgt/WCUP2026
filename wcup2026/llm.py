@@ -101,11 +101,17 @@ def default_model() -> str:
     return os.getenv("OPENAI_MODEL", "gpt-5.5")
 
 
-def build_analysis_payload(results: pd.DataFrame, teams: pd.DataFrame, notes: str) -> dict[str, Any]:
+def build_analysis_payload(
+    results: pd.DataFrame,
+    teams: pd.DataFrame,
+    notes: str,
+    bracket_probable: pd.DataFrame | None = None,
+) -> dict[str, Any]:
     """Construir el payload JSON que se envia al LLM para el analisis.
 
     Selecciona los 12 equipos favoritos del modelo junto con los ratings
-    base de todos los equipos y el escenario cualitativo del usuario.
+    base de todos los equipos, el escenario cualitativo del usuario y,
+    opcionalmente, el cuadro de eliminacion mas probable.
 
     Parameters
     ----------
@@ -117,15 +123,19 @@ def build_analysis_payload(results: pd.DataFrame, teams: pd.DataFrame, notes: st
     notes : str
         Texto libre del usuario con informacion cualitativa (lesiones,
         contexto, escenarios hipoteticos).
+    bracket_probable : pd.DataFrame or None, optional
+        Cuadro de eliminacion mas probable calculado sobre N simulaciones.
+        Si se proporciona, se incluye en el payload como ``bracket_probable``
+        filtrando solo cuartos, semis y final para mantenerlo compacto.
 
     Returns
     -------
     dict[str, Any]
         Diccionario serializable a JSON con las claves
-        ``model_results_top_12``, ``teams``, ``user_scenario`` y
-        ``request``.
+        ``model_results_top_12``, ``teams``, ``user_scenario``,
+        ``bracket_probable`` (si aplica) y ``request``.
     """
-    return {
+    payload: dict[str, Any] = {
         "model_results_top_12": results.head(12)[
             ["team", "group", "overall", "round_of_32_pct", "semifinal_pct", "final_pct", "champion_pct"]
         ].round(2).to_dict(orient="records"),
@@ -133,7 +143,17 @@ def build_analysis_payload(results: pd.DataFrame, teams: pd.DataFrame, notes: st
             ["team", "group", "confederation", "attack", "defense", "squad", "form"]
         ].to_dict(orient="records"),
         "user_scenario": notes,
-        "request": (
+    }
+
+    if bracket_probable is not None and not bracket_probable.empty:
+        late_rounds = {"quarterfinal", "semifinal", "final"}
+        bp = bracket_probable[bracket_probable["round"].isin(late_rounds)].copy()
+        bp["winner_pct"] = bp["winner_pct"].where(bp["winner_pct"].notna(), other=None)
+        payload["bracket_probable"] = bp[
+            ["round", "match_id", "team_a", "team_b", "winner", "winner_pct"]
+        ].to_dict(orient="records")
+
+    payload["request"] = (
             "Entrega un analisis mas concluyente y menos tecnico. "
             "Empieza obligatoriamente con una seccion markdown titulada '## Veredicto final', "
             "sin numeracion. En esa seccion entrega 8 a 10 bullets conclusivos con etiquetas "
@@ -148,10 +168,12 @@ def build_analysis_payload(results: pd.DataFrame, teams: pd.DataFrame, notes: st
             "en tres secciones: '## Lo que dice el modelo', '## Ajustes cualitativos' y "
             "'## Escenarios'. En la ultima seccion cierra con los escenarios base, conservador "
             "y optimista. "
-            "No recomiendes ajustes de pesos, ratings, variables ni escalas numericas "
-            "del modelo."
-        ),
-    }
+            "Si se incluye 'bracket_probable', incorpora sus caminos al titulo en el analisis: "
+            "menciona que equipos llegan a cuartos, semis y la final segun el modelo, cuales son "
+            "los duelos clave del cuadro y que tan probable es cada uno segun el porcentaje. "
+            "No recomiendes ajustes de pesos, ratings, variables ni escalas numericas del modelo."
+    )
+    return payload
 
 
 def call_llm_news_search(model: str, teams: pd.DataFrame) -> str:

@@ -8,6 +8,7 @@ multiples torneos completos para estimar probabilidades.
 
 from __future__ import annotations
 
+from collections import defaultdict, Counter
 from itertools import combinations
 from typing import Any
 
@@ -634,3 +635,214 @@ def describe_matchup(
         "team_a_xg": goals_a / samples,
         "team_b_xg": goals_b / samples,
     }
+
+
+def simulate_bracket_sample(df: pd.DataFrame, params: SimParams) -> pd.DataFrame:
+    """Simular un torneo completo y devolver los partidos de eliminatoria.
+
+    Corre una unica simulacion determinista (con la semilla del params) y
+    devuelve todos los partidos desde la ronda de 32 hasta la final con los
+    equipos que jugaron y el ganador de cada uno.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame de equipos con ratings y metadatos.
+    params : SimParams
+        Hiperparametros de la simulacion.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame con columnas ``round``, ``match_id``, ``team_a``,
+        ``team_b`` y ``winner``, una fila por partido de eliminatoria.
+    """
+    clean = df.copy()
+    clean["group"] = clean["group"].astype(str).str.upper().str.strip()
+    teams = prepare_teams(clean, params)
+    rng = np.random.default_rng(params.seed)
+
+    slots: dict[str, str] = {}
+    thirds: list[dict[str, Any]] = []
+
+    for group in GROUPS:
+        group_teams = clean.loc[clean["group"] == group, "team"].tolist()
+        table = simulate_group(group, group_teams, teams, rng, params)
+        slots[f"1{group}"] = table[0]["team"]
+        slots[f"2{group}"] = table[1]["team"]
+        slots[f"3{group}"] = table[2]["team"]
+        thirds.append(table[2])
+
+    best_thirds = rank_thirds(thirds)[:8]
+    third_assignments = assign_third_slots(best_thirds)
+
+    rows: list[dict[str, Any]] = []
+    winners: dict[int, str] = {}
+
+    for match_id, (left, right) in R32_MATCHES.items():
+        team_a = resolve_slot(left, slots, third_assignments, match_id)
+        team_b = resolve_slot(right, slots, third_assignments, match_id)
+        winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+        winners[match_id] = winner
+        rows.append({
+            "round": "round_of_32",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+            "winner_pct": None,
+        })
+
+    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+        for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
+            team_a = winners[left_id]
+            team_b = winners[right_id]
+            winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            winners[match_id] = winner
+            rows.append({
+                "round": round_name,
+                "match_id": match_id,
+                "team_a": team_a,
+                "team_b": team_b,
+                "winner": winner,
+                "winner_pct": None,
+            })
+
+    return pd.DataFrame(rows)
+
+
+def simulate_bracket_most_probable(
+    df: pd.DataFrame,
+    params: SimParams,
+    n: int = 1000,
+) -> pd.DataFrame:
+    """Calcular el cuadro mas probable corriendo N torneos.
+
+    Para cada posicion del cuadro de eliminacion (match_id fijo) acumula
+    que equipo gano con mayor frecuencia en ``n`` simulaciones completas y
+    devuelve esos equipos como el bracket "mas probable", incluyendo el
+    porcentaje de victorias del ganador en esa posicion.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame de equipos con ratings y metadatos.
+    params : SimParams
+        Hiperparametros de la simulacion.
+    n : int, optional
+        Numero de torneos a simular.  Por defecto 1000.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame con columnas ``round``, ``match_id``, ``team_a``,
+        ``team_b``, ``winner`` y ``winner_pct``.  Los equipos mostrados son
+        los mas frecuentes en cada posicion del cuadro.
+    """
+    clean = df.copy()
+    clean["group"] = clean["group"].astype(str).str.upper().str.strip()
+    teams = prepare_teams(clean, params)
+    rng = np.random.default_rng(params.seed)
+
+    pair_counts: dict[int, Counter] = defaultdict(Counter)
+    winner_counts: dict[int, Counter] = defaultdict(Counter)
+    # head2head_counts[match_id][pair] -> Counter de ganadores cuando jugaron ese par
+    head2head_counts: dict[int, dict[tuple, Counter]] = defaultdict(lambda: defaultdict(Counter))
+
+    round_map: dict[int, str] = {}
+    for mid in R32_MATCHES:
+        round_map[mid] = "round_of_32"
+    for rname, matches in ROUND_TEMPLATES.items():
+        for mid in matches:
+            round_map[mid] = rname
+
+    for _ in range(n):
+        slots: dict[str, str] = {}
+        thirds: list[dict[str, Any]] = []
+
+        for group in GROUPS:
+            group_teams = clean.loc[clean["group"] == group, "team"].tolist()
+            table = simulate_group(group, group_teams, teams, rng, params)
+            slots[f"1{group}"] = table[0]["team"]
+            slots[f"2{group}"] = table[1]["team"]
+            slots[f"3{group}"] = table[2]["team"]
+            thirds.append(table[2])
+
+        best_thirds = rank_thirds(thirds)[:8]
+        third_assignments = assign_third_slots(best_thirds)
+
+        winners: dict[int, str] = {}
+        for match_id, (left, right) in R32_MATCHES.items():
+            team_a = resolve_slot(left, slots, third_assignments, match_id)
+            team_b = resolve_slot(right, slots, third_assignments, match_id)
+            winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            winners[match_id] = winner
+            pair = tuple(sorted([team_a, team_b]))
+            pair_counts[match_id][pair] += 1
+            winner_counts[match_id][winner] += 1
+            head2head_counts[match_id][pair][winner] += 1
+
+        for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+            for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
+                team_a = winners[left_id]
+                team_b = winners[right_id]
+                winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+                winners[match_id] = winner
+                pair = tuple(sorted([team_a, team_b]))
+                pair_counts[match_id][pair] += 1
+                winner_counts[match_id][winner] += 1
+                head2head_counts[match_id][pair][winner] += 1
+
+    # Construir el bracket coherente de forma greedy:
+    # el ganador mas frecuente en cada posicion avanza, y el porcentaje
+    # del partido siguiente se calcula SOLO sobre las simulaciones donde
+    # esos dos equipos especificos se enfrentaron.
+    coherent_winner: dict[int, str] = {}
+    rows: list[dict[str, Any]] = []
+
+    # --- Ronda de 32 ---
+    for match_id in sorted(R32_MATCHES):
+        most_common_pair = pair_counts[match_id].most_common(1)[0][0]
+        team_a, team_b = most_common_pair
+        head2head = head2head_counts[match_id].get(most_common_pair, Counter())
+        total_h2h = sum(head2head.values())
+        winner = head2head.most_common(1)[0][0] if head2head else team_a
+        win_count = head2head[winner] if total_h2h else 0
+        pct = round(100 * win_count / total_h2h, 1) if total_h2h else None
+        coherent_winner[match_id] = winner
+        rows.append({
+            "round": "round_of_32",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+            "winner_pct": pct,
+        })
+
+    # --- Rondas posteriores: usar los ganadores coherentes como equipos ---
+    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+        for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
+            team_a = coherent_winner[left_id]
+            team_b = coherent_winner[right_id]
+            pair = tuple(sorted([team_a, team_b]))
+            head2head = head2head_counts[match_id].get(pair, Counter())
+            total_h2h = sum(head2head.values())
+            if head2head:
+                winner = head2head.most_common(1)[0][0]
+                win_count = head2head[winner]
+                pct = round(100 * win_count / total_h2h, 1)
+            else:
+                # Fallback: el equipo con mejor rating global gana
+                winner = team_a
+                pct = None
+            coherent_winner[match_id] = winner
+            rows.append({
+                "round": round_name,
+                "match_id": match_id,
+                "team_a": team_a,
+                "team_b": team_b,
+                "winner": winner,
+                "winner_pct": pct,
+            })
+
+    return pd.DataFrame(rows)

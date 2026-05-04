@@ -24,12 +24,14 @@ def save_montecarlo_results(
     results: pd.DataFrame,
     teams: pd.DataFrame,
     params: SimParams,
+    bracket: pd.DataFrame | None = None,
+    bracket_probable: pd.DataFrame | None = None,
     path: Path = MONTECARLO_RESULTS_PATH,
 ) -> None:
-    """Guardar la simulacion Monte Carlo en un archivo XLSX con tres hojas.
+    """Guardar la simulacion Monte Carlo en un archivo XLSX con tres o cinco hojas.
 
-    Crea o sobrescribe el archivo con las hojas ``resultados``, ``equipos``
-    y ``parametros``.
+    Crea o sobrescribe el archivo con las hojas ``resultados``, ``equipos``,
+    ``parametros`` y opcionalmente ``bracket`` y ``bracket_probable``.
 
     Parameters
     ----------
@@ -39,6 +41,10 @@ def save_montecarlo_results(
         DataFrame original de equipos con ratings.
     params : SimParams
         Hiperparametros usados en la simulacion.
+    bracket : pd.DataFrame or None, optional
+        Partidos de eliminatoria de una simulacion representativa.
+    bracket_probable : pd.DataFrame or None, optional
+        Cuadro mas probable calculado sobre N simulaciones.
     path : Path, optional
         Ruta del archivo XLSX de salida.  Por defecto
         ``MONTECARLO_RESULTS_PATH``.
@@ -51,6 +57,66 @@ def save_montecarlo_results(
         results.to_excel(writer, sheet_name="resultados", index=False)
         teams.to_excel(writer, sheet_name="equipos", index=False)
         params_df.to_excel(writer, sheet_name="parametros", index=False)
+        if bracket is not None and not bracket.empty:
+            bracket.to_excel(writer, sheet_name="bracket", index=False)
+        if bracket_probable is not None and not bracket_probable.empty:
+            bracket_probable.to_excel(writer, sheet_name="bracket_probable", index=False)
+
+
+def load_bracket_probable(
+    path: Path = MONTECARLO_RESULTS_PATH,
+) -> pd.DataFrame | None:
+    """Leer el cuadro mas probable guardado en la hoja ``bracket_probable`` del XLSX.
+
+    Parameters
+    ----------
+    path : Path, optional
+        Ruta del archivo XLSX.  Por defecto ``MONTECARLO_RESULTS_PATH``.
+
+    Returns
+    -------
+    pd.DataFrame or None
+        DataFrame con el bracket mas probable si la hoja existe; ``None``
+        en caso contrario.
+    """
+    if not path.exists():
+        return None
+    try:
+        xl = pd.ExcelFile(path)
+        if "bracket_probable" not in xl.sheet_names:
+            return None
+        bp = pd.read_excel(xl, sheet_name="bracket_probable")
+        return bp if not bp.empty else None
+    except Exception:
+        return None
+
+
+def load_bracket(
+    path: Path = MONTECARLO_RESULTS_PATH,
+) -> pd.DataFrame | None:
+    """Leer el cuadro de eliminacion guardado en la hoja ``bracket`` del XLSX.
+
+    Parameters
+    ----------
+    path : Path, optional
+        Ruta del archivo XLSX.  Por defecto ``MONTECARLO_RESULTS_PATH``.
+
+    Returns
+    -------
+    pd.DataFrame or None
+        DataFrame con partidos de eliminatoria si la hoja existe y tiene
+        datos; ``None`` en caso contrario.
+    """
+    if not path.exists():
+        return None
+    try:
+        xl = pd.ExcelFile(path)
+        if "bracket" not in xl.sheet_names:
+            return None
+        bracket = pd.read_excel(xl, sheet_name="bracket")
+        return bracket if not bracket.empty else None
+    except Exception:
+        return None
 
 
 def load_montecarlo_results(
