@@ -365,11 +365,131 @@ def build_group_table(results: pd.DataFrame, teams: pd.DataFrame) -> str:
     return "\n".join(rows)
 
 
+def build_bracket_chart(bracket_probable: pd.DataFrame) -> str:
+    """Crear un cuadro de eliminacion top-down en TikZ desde cuartos de final.
+
+    Dibuja cuartos, semis y final de arriba hacia abajo con lineas de
+    conexion y porcentaje del ganador mas probable.
+
+    Parameters
+    ----------
+    bracket_probable : pd.DataFrame
+        DataFrame del cuadro mas probable con columnas ``round``,
+        ``match_id``, ``team_a``, ``team_b``, ``winner``, ``winner_pct``.
+
+    Returns
+    -------
+    str
+        Fragmento LaTeX con el entorno ``tikzpicture`` del bracket.
+    """
+    if bracket_probable is None or bracket_probable.empty:
+        return r"\qaempty{No hay datos de bracket disponibles.}"
+
+    late = {"quarterfinal", "semifinal", "final"}
+    bp = bracket_probable[bracket_probable["round"].isin(late)].copy()
+    if bp.empty:
+        return r"\qaempty{No hay datos de bracket disponibles.}"
+
+    qf = bp[bp["round"] == "quarterfinal"].reset_index(drop=True)
+    sf = bp[bp["round"] == "semifinal"].reset_index(drop=True)
+    fi = bp[bp["round"] == "final"].reset_index(drop=True)
+
+    # Posiciones x para 4 partidos de cuartos (2 por cada lado del cuadro)
+    # Layout: QF(0), QF(1) -> SF(0) -> Final; QF(2), QF(3) -> SF(1) -> Final
+    # x positions (cm): QF pares en 0 y 3.2, SF en 1.6, Final en centro
+    xpos_qf = [0.0, 3.2, 6.4, 9.6]
+    xpos_sf = [1.6, 8.0]
+    xpos_fi = [4.8]
+
+    y_qf = 0.0
+    y_sf = -2.2
+    y_fi = -4.4
+
+    node_w = 2.8   # ancho caja en cm
+    node_h = 0.55  # alto por equipo
+    gap = 0.12     # espacio entre team_a y team_b
+
+    lines: list[str] = [
+        r"\begin{center}",
+        r"\begin{tikzpicture}[x=1cm, y=1cm, font=\small]",
+    ]
+
+    def match_node(x: float, y: float, team_a: str, team_b: str, winner: str, pct: object) -> list[str]:
+        """Emitir un nodo de partido con dos equipos y marcar ganador."""
+        ta = latex_escape(team_a)
+        tb = latex_escape(team_b)
+        tw = latex_escape(winner)
+        pct_str = ""
+        try:
+            pct_str = f" {float(pct):.0f}\\%"
+        except (TypeError, ValueError):
+            pass
+
+        color_a = "qaturquoise" if winner == team_a else "qaink"
+        color_b = "qaturquoise" if winner == team_b else "qaink"
+        label_a = rf"\textbf{{{ta}}}" if winner == team_a else ta
+        label_b = rf"\textbf{{{tb}}}" if winner == team_b else tb
+
+        half_w = node_w / 2
+        result = [
+            # caja contenedora
+            rf"\draw[draw=qaline, fill=qasoft, rounded corners=2pt] "
+            rf"({x - half_w:.2f},{y + gap / 2:.2f}) rectangle ({x + half_w:.2f},{y + gap / 2 + node_h:.2f});",
+            rf"\draw[draw=qaline, fill=qasoft, rounded corners=2pt] "
+            rf"({x - half_w:.2f},{y - gap / 2 - node_h:.2f}) rectangle ({x + half_w:.2f},{y - gap / 2:.2f});",
+            # etiquetas equipos
+            rf"\node[anchor=west, text={color_a}] at ({x - half_w + 0.08:.2f},{y + gap / 2 + node_h / 2:.2f}) {{{label_a}}};",
+            rf"\node[anchor=west, text={color_b}] at ({x - half_w + 0.08:.2f},{y - gap / 2 - node_h / 2:.2f}) {{{label_b}}};",
+            # porcentaje ganador
+            rf"\node[anchor=east, text=qamutex, font=\scriptsize] at ({x + half_w - 0.05:.2f},{y + gap / 2 + node_h / 2:.2f}) {{{pct_str}}};",
+        ]
+        return result
+
+    # --- Cuartos ---
+    qf_centers: list[tuple[float, float]] = []
+    for i, row in qf.iterrows():
+        x = xpos_qf[i] if i < len(xpos_qf) else float(i) * 3.2
+        lines += match_node(x, y_qf, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
+        qf_centers.append((x, y_qf))
+
+    # --- Semis ---
+    sf_centers: list[tuple[float, float]] = []
+    for i, row in sf.iterrows():
+        x = xpos_sf[i] if i < len(xpos_sf) else xpos_sf[-1]
+        lines += match_node(x, y_sf, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
+        sf_centers.append((x, y_sf))
+        # Lineas desde los dos cuartos que alimentan esta semi
+        for qi in range(2):
+            qx, _ = qf_centers[i * 2 + qi] if (i * 2 + qi) < len(qf_centers) else (x, y_qf)
+            lines.append(
+                rf"\draw[draw=qaline] ({qx:.2f},{y_qf - (gap / 2 + node_h):.2f}) -- "
+                rf"({qx:.2f},{(y_qf + y_sf) / 2:.2f}) -- "
+                rf"({x:.2f},{(y_qf + y_sf) / 2:.2f}) -- "
+                rf"({x:.2f},{y_sf + gap / 2 + node_h:.2f});"
+            )
+
+    # --- Final ---
+    for i, row in fi.iterrows():
+        x = xpos_fi[0]
+        lines += match_node(x, y_fi, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
+        for si, (sx, _) in enumerate(sf_centers):
+            lines.append(
+                rf"\draw[draw=qaline] ({sx:.2f},{y_sf - (gap / 2 + node_h):.2f}) -- "
+                rf"({sx:.2f},{(y_sf + y_fi) / 2:.2f}) -- "
+                rf"({x:.2f},{(y_sf + y_fi) / 2:.2f}) -- "
+                rf"({x:.2f},{y_fi + gap / 2 + node_h:.2f});"
+            )
+
+    lines += [r"\end{tikzpicture}", r"\end{center}"]
+    return "\n".join(lines)
+
+
 def render_report_tex(
     results: pd.DataFrame,
     teams: pd.DataFrame,
     llm_text: str | None,
     params: SimParams | None,
+    bracket_probable: pd.DataFrame | None = None,
     output_path: Path = REPORT_TEX_PATH,
 ) -> Path:
     """Renderizar el template LaTeX sustituyendo todos los placeholders.
@@ -409,6 +529,7 @@ def render_report_tex(
         "<<CHAMPION_CHART>>": build_champion_chart(results),
         "<<TOP_TABLE>>": build_top_table(results),
         "<<GROUP_TABLE>>": build_group_table(results, teams),
+        "<<BRACKET_CHART>>": build_bracket_chart(bracket_probable),
         "<<LLM_RESULT>>": markdown_to_latex(llm_text),
     }
     tex = template
@@ -468,6 +589,7 @@ def generate_report(
     teams: pd.DataFrame,
     llm_text: str | None,
     params: SimParams | None,
+    bracket_probable: pd.DataFrame | None = None,
     compile_pdf: bool = True,
 ) -> tuple[Path, Path | None]:
     """Generar el archivo TEX del reporte y opcionalmente compilar el PDF.
@@ -485,6 +607,8 @@ def generate_report(
         Texto Markdown del analisis LLM.
     params : SimParams or None
         Hiperparametros de la simulacion.
+    bracket_probable : pd.DataFrame or None, optional
+        Cuadro de eliminacion mas probable para incluir en el reporte.
     compile_pdf : bool, optional
         Si ``True`` (por defecto), compila el TEX a PDF con pdflatex.
 
@@ -494,6 +618,6 @@ def generate_report(
         ``(tex_path, pdf_path)`` donde ``pdf_path`` es ``None`` si
         ``compile_pdf`` es ``False``.
     """
-    tex_path = render_report_tex(results, teams, llm_text, params)
+    tex_path = render_report_tex(results, teams, llm_text, params, bracket_probable=bracket_probable)
     pdf_path = compile_report(tex_path) if compile_pdf else None
     return tex_path, pdf_path

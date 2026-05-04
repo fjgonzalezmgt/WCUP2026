@@ -538,6 +538,7 @@ def render_report_view(results: pd.DataFrame | None, df: pd.DataFrame) -> None:
                     teams=df,
                     llm_text=st.session_state.get("llm_answer"),
                     params=st.session_state.get("params"),
+                    bracket_probable=st.session_state.get("bracket_probable"),
                     compile_pdf=True,
                 )
             st.success(f"Reporte generado: {tex_path.name}")
