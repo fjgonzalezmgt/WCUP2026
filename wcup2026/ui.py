@@ -15,7 +15,6 @@ import json
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from wcup2026.config import (
@@ -117,7 +116,7 @@ def render_copy_button(text: str, key: str) -> None:
     status_id = f"copy-llm-status-{key}"
     payload = json.dumps(text)
     button_label = html.escape("Copiar analisis")
-    components.html(
+    st.iframe(
             f"""
             <div style="display:flex; justify-content:flex-end; margin:0 0 0.5rem 0;">
                 <button
@@ -807,7 +806,7 @@ def render_bracket_view(
         st.caption("Simulacion representativa (semilla fija). El ganador de cada partido aparece en verde.")
 
     fig = _build_bracket_figure(active, from_round)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def render_app() -> None:
