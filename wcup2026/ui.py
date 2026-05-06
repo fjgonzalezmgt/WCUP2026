@@ -206,6 +206,26 @@ def run_simulation_cached(csv_text: str, params: SimParams) -> pd.DataFrame:
     return simulate_many(df, params)
 
 
+def build_results_export_csv(results: pd.DataFrame) -> str:
+    """Construir el CSV de probabilidades finales en formato portable.
+
+    Convierte las columnas internas en porcentaje a probabilidades 0-1 y
+    conserva una fila por cada seleccion simulada.
+    """
+    export = results[
+        ["team", "champion_pct", "final_pct", "semifinal_pct"]
+    ].rename(
+        columns={
+            "champion_pct": "prob_champion",
+            "final_pct": "prob_final",
+            "semifinal_pct": "prob_semifinal",
+        }
+    ).copy()
+    for column in ["prob_champion", "prob_final", "prob_semifinal"]:
+        export[column] = export[column] / 100
+    return export.to_csv(index=False, float_format="%.4f")
+
+
 def load_persisted_outputs_once() -> None:
     """Cargar resultados guardados en disco una sola vez por sesion de Streamlit.
 
@@ -331,6 +351,14 @@ def render_probability_view(results: pd.DataFrame) -> None:
     fig.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=10))
     fig.update_traces(textposition="outside", cliponaxis=False)
     st.plotly_chart(fig, width="stretch")
+
+    st.download_button(
+        "Exportar resultados CSV",
+        data=build_results_export_csv(results),
+        file_name="resultados_wcup2026.csv",
+        mime="text/csv",
+        help="Descarga todas las selecciones con columnas team, prob_champion, prob_final y prob_semifinal en escala 0-1.",
+    )
 
     st.dataframe(
         results[
