@@ -25,6 +25,7 @@ Aplicación de Streamlit para simular el Mundial 2026 combinando **simulación M
 | **LLM — Interpretación de resultados** | Envía el top-12 del modelo junto con los ratings y el escenario del usuario al LLM para obtener un análisis narrativo: favoritos, riesgos cualitativos y ajustes sugeridos con rangos numéricos accionables. |
 | **Ratings editables** | Elo aproximado, ataque, defensa, plantilla y forma ajustables directamente en la tabla interactiva de la UI. |
 | **Visualizaciones interactivas** | Gráficos de barras de Plotly por ronda, tabla de grupos y comparador de duelos directos. |
+| **Exportación CSV** | Botón de descarga que genera un CSV con los resultados de la simulación, listo para subir a la [Quiniela de Modelos Predictivos WCUP 2026](https://www.kaggle.com/competitions/quiniela-de-modelos-predictivos-wcup-2026) en Kaggle. |
 
 ---
 
@@ -347,6 +348,7 @@ WCUP2026/
 | Alan Turing Institute — modelo 2022 | https://www.turing.ac.uk/blog/can-our-algorithm-predict-winner-2022-football-world-cup |
 | Opta Analyst — predicciones 2022 | https://theanalyst.com/articles/who-will-win-the-2022-fifa-world-cup-predictions |
 | OpenAI Responses API | https://platform.openai.com/docs/api-reference/responses |
+| Quiniela de Modelos Predictivos WCUP 2026 (Kaggle) | https://www.kaggle.com/competitions/quiniela-de-modelos-predictivos-wcup-2026 |
 
 ---
 
