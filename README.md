@@ -8,7 +8,7 @@
 ![Pandas](https://img.shields.io/badge/Pandas-2.x-150458?logo=pandas&logoColor=white)
 ![Plotly](https://img.shields.io/badge/Plotly-5.x-3F4F75?logo=plotly&logoColor=white)
 ![Conda](https://img.shields.io/badge/Conda-environment-44A833?logo=anaconda&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
+![License](https://img.shields.io/badge/License-CC%20BY%204.0-green)
 
 Aplicación de Streamlit para simular el Mundial 2026 combinando **simulación Monte Carlo**, **modelo de goles Poisson** y una capa de **inteligencia artificial** que actualiza ratings con búsqueda web, consulta noticias en tiempo real e interpreta los resultados del modelo con lenguaje natural.
 
@@ -341,6 +341,14 @@ WCUP2026/
 - **Escenarios automáticos**: generar hipótesis de localía, clima, penales y bajas clave sin intervención manual.
 - **Alertas de ratings**: detectar equipos con ratings fuera de rango o inconsistencias en el CSV.
 - **Reportes narrativos**: generar un mini análisis por selección listo para publicar en newsletter.
+
+---
+
+## Licencia
+
+Este proyecto se distribuye bajo la licencia **Creative Commons Attribution 4.0 International (CC BY 4.0)**. Puedes compartir y adaptar el material, incluso con fines comerciales, siempre que otorgues la atribución correspondiente.
+
+Consulta el texto completo en [LICENSE](LICENSE) o en <https://creativecommons.org/licenses/by/4.0/>.
 
 ---
 
