@@ -62,6 +62,16 @@
 \colorbox{qasoft}{\begin{minipage}{0.94\linewidth}\textcolor{qamutex}{#1}\end{minipage}}
 \endgroup}
 
+\newcommand{\qadisclaimer}[1]{%
+\begingroup
+\setlength{\fboxsep}{8pt}
+\colorbox{qasoft}{%
+\begin{minipage}{0.94\linewidth}
+{\footnotesize\bfseries\color{qaink}Aviso sobre apuestas}\par
+{\footnotesize\color{qamutex}#1}
+\end{minipage}}
+\endgroup}
+
 \begin{document}
 \pagenumbering{gobble}
 
@@ -117,6 +127,8 @@
 \qakicker{Interpretacion asistida}
 \qasection{Resultado del LLM}
 <<LLM_RESULT>>
+
+\qadisclaimer{Este reporte es solo para fines informativos y analiticos. Las probabilidades, simulaciones y comentarios no constituyen consejo financiero, recomendacion de apuesta ni garantia de resultados. Cualquier decision relacionada con apuestas deportivas debe tomarse bajo responsabilidad personal, considerando la legislacion aplicable y los riesgos de perdida.}
 
 \vfill
 {\footnotesize\color{qamutex}

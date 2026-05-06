@@ -14,6 +14,12 @@ Aplicación de Streamlit para simular el Mundial 2026 combinando **simulación M
 
 ---
 
+## Aviso sobre apuestas
+
+Este proyecto es solo para fines informativos, educativos y analíticos. Las probabilidades, simulaciones, rankings, salidas del LLM y archivos exportados no constituyen consejo financiero, recomendación de apuesta ni garantía de resultados. Cualquier decisión relacionada con apuestas deportivas debe tomarse bajo responsabilidad personal, considerando la legislación aplicable, la edad mínima legal y los riesgos de pérdida.
+
+---
+
 ## Características principales
 
 | Módulo | Descripción |
