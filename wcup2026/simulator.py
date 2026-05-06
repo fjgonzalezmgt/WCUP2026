@@ -312,6 +312,21 @@ def assign_third_slots(best_thirds: list[dict[str, Any]]) -> dict[int, str]:
     assignments: dict[int, str] = {}
 
     def backtrack(index: int, available: dict[str, str]) -> bool:
+        """Intentar asignar terceros a partidos restantes mediante backtracking.
+
+        Parameters
+        ----------
+        index : int
+            Indice del partido actual dentro de ``ordered_matches``.
+        available : dict[str, str]
+            Mapeo ``{grupo: equipo}`` con los terceros aun sin asignar.
+
+        Returns
+        -------
+        bool
+            ``True`` si se encontro una asignacion valida para todos los
+            partidos restantes; ``False`` si no fue posible.
+        """
         if index == len(ordered_matches):
             return True
 

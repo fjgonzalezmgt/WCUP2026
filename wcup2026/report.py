@@ -131,6 +131,11 @@ def markdown_to_latex(markdown_text: str | None) -> str:
     in_items = False
 
     def close_items() -> None:
+        """Cerrar el entorno ``itemize`` activo si esta abierto.
+
+        Modifica ``output`` e ``in_items`` del scope envolvente para
+        anadir ``\\end{itemize}`` solo cuando hay una lista en curso.
+        """
         nonlocal in_items
         if in_items:
             output.append(r"\end{itemize}")
@@ -415,7 +420,31 @@ def build_bracket_chart(bracket_probable: pd.DataFrame) -> str:
     ]
 
     def match_node(x: float, y: float, team_a: str, team_b: str, winner: str, pct: object) -> list[str]:
-        """Emitir un nodo de partido con dos equipos y marcar ganador."""
+        """Emitir un nodo TikZ de partido con dos equipos y marcar al ganador.
+
+        Parameters
+        ----------
+        x : float
+            Coordenada X del centro del nodo (cm).
+        y : float
+            Coordenada Y del centro del nodo (cm).
+        team_a : str
+            Nombre del primer equipo (cuadro superior).
+        team_b : str
+            Nombre del segundo equipo (cuadro inferior).
+        winner : str
+            Nombre del equipo ganador; debe coincidir con ``team_a`` o
+            ``team_b`` para que se resalte.
+        pct : object
+            Porcentaje de victorias del ganador.  Si no es convertible a
+            ``float`` se omite.
+
+        Returns
+        -------
+        list[str]
+            Lista de comandos TikZ que dibujan los dos rectangulos del
+            partido y las etiquetas con los nombres y porcentaje.
+        """
         ta = latex_escape(team_a)
         tb = latex_escape(team_b)
         tw = latex_escape(winner)

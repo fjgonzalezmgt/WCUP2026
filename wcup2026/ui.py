@@ -167,7 +167,23 @@ def load_default_data_cached() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def run_bracket_sample_cached(csv_text: str, params: SimParams) -> pd.DataFrame:
-    """Generar el cuadro de eliminacion de una simulacion representativa con cache."""
+    """Generar el cuadro de eliminacion de una simulacion representativa con cache.
+
+    Envuelve ``simulate_bracket_sample`` con cache de Streamlit.  El cache
+    se invalida cuando cambia ``csv_text`` o ``params``.
+
+    Parameters
+    ----------
+    csv_text : str
+        Datos de equipos serializados como CSV (hace hashable el DataFrame).
+    params : SimParams
+        Hiperparametros de la simulacion.
+
+    Returns
+    -------
+    pd.DataFrame
+        Partidos de eliminatoria (salida de ``simulate_bracket_sample``).
+    """
     df = dataframe_from_csv_text(csv_text)
     validate_team_data(df)
     return simulate_bracket_sample(df, params)
@@ -175,7 +191,24 @@ def run_bracket_sample_cached(csv_text: str, params: SimParams) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def run_bracket_probable_cached(csv_text: str, params: SimParams) -> pd.DataFrame:
-    """Generar el cuadro mas probable con cache."""
+    """Generar el cuadro mas probable con cache.
+
+    Envuelve ``simulate_bracket_most_probable`` con cache de Streamlit.  El
+    cache se invalida cuando cambia ``csv_text`` o ``params``.
+
+    Parameters
+    ----------
+    csv_text : str
+        Datos de equipos serializados como CSV (hace hashable el DataFrame).
+    params : SimParams
+        Hiperparametros de la simulacion.
+
+    Returns
+    -------
+    pd.DataFrame
+        Cuadro mas probable calculado sobre 1000 simulaciones (salida de
+        ``simulate_bracket_most_probable``).
+    """
     df = dataframe_from_csv_text(csv_text)
     validate_team_data(df)
     return simulate_bracket_most_probable(df, params, n=1000)
@@ -211,6 +244,19 @@ def build_results_export_csv(results: pd.DataFrame) -> str:
 
     Convierte las columnas internas en porcentaje a probabilidades 0-1 y
     conserva una fila por cada seleccion simulada.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        DataFrame de resultados de la simulacion (salida de
+        ``simulate_many``) con columnas ``team``, ``champion_pct``,
+        ``final_pct`` y ``semifinal_pct``.
+
+    Returns
+    -------
+    str
+        Texto CSV con columnas ``team``, ``prob_champion``, ``prob_final``
+        y ``prob_semifinal`` (probabilidades 0-1 con cuatro decimales).
     """
     export = results[
         ["team", "champion_pct", "final_pct", "semifinal_pct"]
@@ -651,20 +697,26 @@ def render_data_editor(default_df: pd.DataFrame, model: str) -> pd.DataFrame:
 
 
 def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"):
-    """Construir la figura Plotly del cuadro de eliminacion.
+    """Construir la figura Plotly del cuadro de eliminacion como arbol vertical.
+
+    Distribuye cada partido en columnas (octavos/cuartos/semis/final) y filas
+    fijas, dibuja conexiones entre rondas y resalta al ganador con color
+    turquesa.  Si el bracket esta vacio, los partidos se renderizan como TBD.
 
     Parameters
     ----------
     bracket : pd.DataFrame
         DataFrame con columnas ``round``, ``match_id``, ``team_a``,
-        ``team_b`` y ``winner``.
-    from_round : str
-        ``"round_of_16"`` para mostrar desde octavos o ``"quarterfinal"``
-        para mostrar desde cuartos.
+        ``team_b``, ``winner`` y opcionalmente ``winner_pct``.
+    from_round : str, optional
+        ``"round_of_16"`` para mostrar desde octavos (configuracion
+        completa) o ``"quarterfinal"`` para mostrar solo desde cuartos.
+        Por defecto ``"round_of_16"``.
 
     Returns
     -------
     plotly.graph_objects.Figure
+        Figura Plotly lista para renderizar en Streamlit.
     """
     import plotly.graph_objects as go
 
