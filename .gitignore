@@ -12,6 +12,7 @@ __pycache__/
 .conda/
 env/
 venv/
+wcup2026/parameters.py
 resultados/
 reporte/*
 !reporte/template_reporte_wcup2026.tex

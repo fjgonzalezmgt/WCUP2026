@@ -1,0 +1,50 @@
+"""Parametros de ejemplo del motor de simulacion.
+
+Copia este archivo como ``parameters.py`` para crear una configuracion
+local. El archivo real ``parameters.py`` esta ignorado por git para que
+cada usuario pueda ajustar sus valores sin afectar el repositorio.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SimParams:
+    """Hiperparametros de ejemplo para la simulacion Monte Carlo.
+
+    Parameters
+    ----------
+    simulations : int
+        Numero de torneos completos a simular.
+    seed : int
+        Semilla del generador de numeros aleatorios para reproducibilidad.
+    base_goals : float
+        Goles esperados base por equipo y partido antes de aplicar
+        diferencias de rating.
+    home_advantage : float
+        Incremento al lambda de goles para los paises anfitriones
+        (Canada, Mexico, EE.UU.).
+    knockout_noise : float
+        Escala del ruido gaussiano en eliminatorias; valores altos
+        aumentan el factor suerte.
+    elo_weight : float
+        Peso del componente Elo en el rating global del equipo.
+    squad_weight : float
+        Peso de la calidad de plantilla en el rating global.
+    form_weight : float
+        Peso de la forma reciente en el rating global.
+    balance_weight : float
+        Peso del promedio ataque+defensa en el rating global.
+    """
+
+    simulations: int = 1000
+    seed: int = 1234
+    base_goals: float = 1.25
+    home_advantage: float = 0.05
+    knockout_noise: float = 20.0
+    elo_weight: float = 0.40
+    squad_weight: float = 0.20
+    form_weight: float = 0.20
+    balance_weight: float = 0.20
