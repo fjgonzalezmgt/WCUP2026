@@ -16,7 +16,13 @@ from wcup2026.parameters import SimParams
 
 
 def ensure_results_dir() -> None:
-    """Crear la carpeta de resultados si no existe."""
+    """Crear la carpeta de resultados si no existe.
+
+    Returns
+    -------
+    None
+        La funcion solo garantiza la existencia de ``RESULTS_DIR``.
+    """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 

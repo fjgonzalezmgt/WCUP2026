@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import html
 import json
+from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -60,6 +62,11 @@ def configure_page() -> None:
     Llama a ``st.set_page_config`` con titulo e icono de la app, carga
     el archivo ``.env`` via dotenv e inyecta los estilos CSS personalizados.
     Debe invocarse como primera instruccion Streamlit del script.
+
+    Returns
+    -------
+    None
+        Configura Streamlit y no devuelve ningun valor.
     """
     st.set_page_config(page_title=APP_TITLE, page_icon="WC26", layout="wide")
     load_dotenv()
@@ -72,6 +79,11 @@ def inject_style() -> None:
     Ajusta padding del contenedor principal, estilo de las metricas,
     tipografia de encabezados y clases utilitarias ``.source-line`` y
     ``.small-note``.
+
+    Returns
+    -------
+    None
+        Escribe estilos CSS en la pagina actual de Streamlit.
     """
     st.markdown(
         """
@@ -279,6 +291,11 @@ def load_persisted_outputs_once() -> None:
     centinela para evitar lecturas repetidas en re-runs.  Inicializa
     ``simulation_results``, ``simulation_df`` y ``llm_answer`` si existen
     datos guardados y aun no hay valores en la sesion.
+
+    Returns
+    -------
+    None
+        Actualiza ``st.session_state`` con datos persistidos si existen.
     """
     if st.session_state.get("_persisted_outputs_loaded"):
         return
@@ -488,6 +505,11 @@ def render_model_view() -> None:
     Muestra texto explicativo sobre el funcionamiento del simulador,
     criterios de desempate, logica de eliminatorias y enlaces a las
     fuentes de datos oficiales de FIFA y OpenAI.
+
+    Returns
+    -------
+    None
+        Renderiza contenido informativo en la pagina Streamlit.
     """
     st.subheader("Como piensa el modelo")
     st.markdown(
@@ -895,6 +917,11 @@ def render_app() -> None:
     Llama a todos los componentes de renderizado en orden: barra lateral,
     titulo, editor de datos, ejecucion de la simulacion y las cuatro
     pestanas de contenido (Prediccion, Grupos, Modelo, LLM).
+
+    Returns
+    -------
+    None
+        Renderiza la aplicacion completa y actualiza ``st.session_state``.
     """
     load_persisted_outputs_once()
 
@@ -936,8 +963,8 @@ def render_app() -> None:
     bracket = st.session_state.get("bracket")
     bracket_probable = st.session_state.get("bracket_probable")
 
-    tab_pred, tab_bracket, tab_groups, tab_model, tab_llm, tab_report = st.tabs(
-        ["Prediccion", "Bracket", "Grupos", "Modelo", "LLM", "Reporte"]
+    tab_pred, tab_bracket, tab_groups, tab_model, tab_llm, tab_eval, tab_report = st.tabs(
+        ["Prediccion", "Bracket", "Grupos", "Modelo", "LLM", "Evaluar", "Reporte"]
     )
     with tab_pred:
         if results is None:
@@ -958,8 +985,494 @@ def render_app() -> None:
             render_llm_view(None, sim_df, llm_model)
         else:
             render_llm_view(results, sim_df, llm_model)
+    with tab_eval:
+        render_evaluation_view()
     with tab_report:
         render_report_view(results, sim_df)
+
+
+def render_evaluation_view() -> None:
+    """Renderizar la pestana de evaluacion de submissions.
+    
+    Muestra controles para validar los CSVs de ``evaluations/`` bajo
+    demanda, calcular Brier Scores cuando existe ``ground_truth.csv`` y
+    generar un reporte Excel descargable.
+
+    Returns
+    -------
+    None
+        Renderiza controles, tablas, graficos y botones de descarga en
+        la pestana de Streamlit.
+    """
+    st.markdown("### Evaluación de Submissions")
+    st.markdown("Valida y evalúa todos los CSVs de la carpeta `evaluations/`")
+    st.markdown("")
+    
+    # Definir equipos válidos y columnas
+    valid_teams = [
+        "Algeria", "Argentina", "Australia", "Austria", "Belgium",
+        "Bosnia and Herzegovina", "Brazil", "Cabo Verde", "Canada", "Colombia",
+        "Congo DR", "Cote d'Ivoire", "Croatia", "Curacao", "Czechia",
+        "Ecuador", "Egypt", "England", "France", "Germany",
+        "Ghana", "Haiti", "IR Iran", "Iraq", "Japan",
+        "Jordan", "Korea Republic", "Mexico", "Morocco", "Netherlands",
+        "New Zealand", "Norway", "Panama", "Paraguay", "Portugal",
+        "Qatar", "Saudi Arabia", "Scotland", "Senegal", "South Africa",
+        "Spain", "Sweden", "Switzerland", "Tunisia", "Turkiye",
+        "USA", "Uzbekistan", "Uruguay",
+    ]
+    
+    required_columns = ["team", "prob_champion", "prob_final", "prob_semifinal"]
+    stage_weights = {
+        "prob_champion": 0.50,
+        "prob_final": 0.30,
+        "prob_semifinal": 0.20,
+    }
+    
+    def calculate_brier_score(predictions: pd.Series, actuals: pd.Series) -> float:
+        """Calcular el Brier Score de una serie de predicciones.
+
+        Parameters
+        ----------
+        predictions : pd.Series
+            Probabilidades predichas para una etapa del torneo.
+        actuals : pd.Series
+            Indicadores reales de ocurrencia, codificados como 0 o 1.
+
+        Returns
+        -------
+        float
+            Promedio de ``(prediccion - real) ** 2``.
+        """
+        return ((predictions - actuals) ** 2).mean()
+    
+    def validate_submission(df: pd.DataFrame, filename: str) -> tuple[bool, list[str]]:
+        """Validar que una submission tenga el formato esperado.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Datos cargados desde el CSV de submission.
+        filename : str
+            Nombre del archivo, usado para contexto en mensajes.
+
+        Returns
+        -------
+        tuple[bool, list[str]]
+            Bandera de validez y lista de errores encontrados.
+        """
+        errors = []
+        
+        # Verificar columnas
+        missing_cols = set(required_columns) - set(df.columns)
+        if missing_cols:
+            errors.append(f"Faltan columnas: {', '.join(missing_cols)}")
+        
+        extra_cols = set(df.columns) - set(required_columns)
+        if extra_cols:
+            errors.append(f"Columnas extra: {', '.join(extra_cols)}")
+        
+        if errors:
+            return False, errors
+        
+        # Verificar cantidad de equipos
+        if len(df) != 48:
+            errors.append(f"Se esperan 48 equipos, se encontraron {len(df)}")
+        
+        # Verificar nombres de equipos
+        invalid_teams = set(df["team"]) - set(valid_teams)
+        if invalid_teams:
+            errors.append(f"Equipos inválidos: {', '.join(sorted(invalid_teams))}")
+        
+        missing_teams = set(valid_teams) - set(df["team"])
+        if missing_teams:
+            errors.append(f"Equipos faltantes: {', '.join(sorted(missing_teams))}")
+        
+        # Verificar duplicados
+        if df["team"].duplicated().any():
+            dups = df.loc[df["team"].duplicated(), "team"].tolist()
+            errors.append(f"Equipos duplicados: {', '.join(dups)}")
+        
+        # Verificar rangos de probabilidades
+        for col in required_columns[1:]:
+            invalid = ((df[col] < 0) | (df[col] > 1)).sum()
+            if invalid > 0:
+                errors.append(f"Columna {col}: {invalid} valores fuera de rango [0, 1]")
+        
+        return len(errors) == 0, errors
+    
+    def evaluate_submission(csv_path: Path, ground_truth: pd.DataFrame) -> dict:
+        """Validar y puntuar un archivo de submission.
+
+        Parameters
+        ----------
+        csv_path : Path
+            Ruta del archivo CSV a evaluar.
+        ground_truth : pd.DataFrame
+            Resultados reales del torneo con columnas ``team``,
+            ``champion``, ``final`` y ``semifinal``.
+
+        Returns
+        -------
+        dict
+            Resultado de validacion y scores Brier por etapa, incluyendo
+            ``score_final`` cuando hay datos reales disponibles.
+        """
+        filename = csv_path.name
+        result = {
+            "file": filename,
+            "valid": False,
+            "errors": [],
+            "brier_champion": None,
+            "brier_final": None,
+            "brier_semifinal": None,
+            "score_final": None,
+        }
+        
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            result["errors"].append(f"Error al leer CSV: {str(e)}")
+            return result
+        
+        valid, errors = validate_submission(df, filename)
+        result["valid"] = valid
+        result["errors"] = errors
+        
+        if not valid or ground_truth.empty:
+            return result
+        
+        # Merge con resultados reales
+        merged = df.merge(ground_truth, on="team", how="inner")
+        
+        if len(merged) != 48:
+            result["errors"].append("No se pudieron hacer match todos los equipos")
+            return result
+        
+        # Calcular Brier Scores por etapa
+        result["brier_champion"] = calculate_brier_score(
+            merged["prob_champion"], merged["champion"]
+        )
+        result["brier_final"] = calculate_brier_score(
+            merged["prob_final"], merged["final"]
+        )
+        result["brier_semifinal"] = calculate_brier_score(
+            merged["prob_semifinal"], merged["semifinal"]
+        )
+        
+        # Calcular score final ponderado
+        result["score_final"] = (
+            stage_weights["prob_champion"] * result["brier_champion"]
+            + stage_weights["prob_final"] * result["brier_final"]
+            + stage_weights["prob_semifinal"] * result["brier_semifinal"]
+        )
+        
+        return result
+
+    def build_excel_report(results: list[dict], ground_truth_loaded: bool, eval_dir: Path) -> bytes:
+        """Crear un reporte XLSX con formato para descargar desde Streamlit.
+
+        Parameters
+        ----------
+        results : list[dict]
+            Resultados producidos por ``evaluate_submission``.
+        ground_truth_loaded : bool
+            Indica si ``ground_truth.csv`` fue cargado correctamente.
+        eval_dir : Path
+            Carpeta donde se buscaron las submissions.
+
+        Returns
+        -------
+        bytes
+            Contenido binario del archivo XLSX generado en memoria.
+        """
+        from openpyxl.chart import BarChart, Reference
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+
+        validation_df = pd.DataFrame(
+            [
+                {
+                    "Submission": result["file"],
+                    "Estado": "Valido" if result["valid"] else "Error",
+                    "Detalles": "; ".join(result["errors"]) if result["errors"] else "OK",
+                }
+                for result in results
+            ]
+        )
+        ranked_results = sorted(
+            [r for r in results if r["valid"] and r["score_final"] is not None],
+            key=lambda x: x["score_final"],
+        )
+        scores_df = pd.DataFrame(
+            [
+                {
+                    "Posicion": i,
+                    "Submission": result["file"],
+                    "Champion": result["brier_champion"],
+                    "Final": result["brier_final"],
+                    "Semifinal": result["brier_semifinal"],
+                    "Score Final": result["score_final"],
+                }
+                for i, result in enumerate(ranked_results, 1)
+            ]
+        )
+        best = ranked_results[0] if ranked_results else None
+        valid_count = sum(1 for result in results if result["valid"])
+        summary_df = pd.DataFrame(
+            [
+                {"Metrica": "Carpeta evaluada", "Valor": str(eval_dir)},
+                {"Metrica": "Submissions encontradas", "Valor": len(results)},
+                {"Metrica": "Submissions validas", "Valor": valid_count},
+                {"Metrica": "Submissions con error", "Valor": len(results) - valid_count},
+                {"Metrica": "Ground truth cargado", "Valor": "Si" if ground_truth_loaded else "No"},
+                {"Metrica": "Mejor submission", "Valor": best["file"] if best else "N/A"},
+                {"Metrica": "Mejor score final", "Valor": best["score_final"] if best else "N/A"},
+            ]
+        )
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            summary_df.to_excel(writer, sheet_name="Resumen", index=False)
+            validation_df.to_excel(writer, sheet_name="Validacion", index=False)
+            if not scores_df.empty:
+                scores_df.to_excel(writer, sheet_name="Ranking", index=False)
+
+            workbook = writer.book
+            header_fill = PatternFill("solid", fgColor="1F4E78")
+            header_font = Font(color="FFFFFF", bold=True)
+            summary_fill = PatternFill("solid", fgColor="D9EAF7")
+            ok_fill = PatternFill("solid", fgColor="E2F0D9")
+            error_fill = PatternFill("solid", fgColor="FCE4D6")
+            podium_fills = {
+                1: PatternFill("solid", fgColor="FFF2CC"),
+                2: PatternFill("solid", fgColor="D9EAF7"),
+                3: PatternFill("solid", fgColor="EADCF8"),
+            }
+
+            for worksheet in workbook.worksheets:
+                worksheet.freeze_panes = "A2"
+                worksheet.sheet_view.showGridLines = False
+                for cell in worksheet[1]:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(horizontal="center")
+                for column_cells in worksheet.columns:
+                    max_length = max(len(str(cell.value or "")) for cell in column_cells)
+                    width = min(max(max_length + 3, 14), 55)
+                    worksheet.column_dimensions[get_column_letter(column_cells[0].column)].width = width
+
+            resumen = workbook["Resumen"]
+            for row in resumen.iter_rows(min_row=2, max_col=2):
+                row[0].font = Font(bold=True)
+                row[0].fill = summary_fill
+
+            validacion = workbook["Validacion"]
+            for row in validacion.iter_rows(min_row=2):
+                fill = ok_fill if row[1].value == "Valido" else error_fill
+                for cell in row:
+                    cell.fill = fill
+
+            if "Ranking" in workbook.sheetnames:
+                ranking = workbook["Ranking"]
+                for row in ranking.iter_rows(min_row=2):
+                    fill = podium_fills.get(row[0].value)
+                    if fill:
+                        for cell in row:
+                            cell.fill = fill
+                    for cell in row[2:]:
+                        cell.number_format = "0.000000"
+
+                chart = BarChart()
+                chart.title = "Score final por submission"
+                chart.y_axis.title = "Score final"
+                chart.x_axis.title = "Submission"
+                data = Reference(ranking, min_col=6, min_row=1, max_row=ranking.max_row)
+                categories = Reference(ranking, min_col=2, min_row=2, max_row=ranking.max_row)
+                chart.add_data(data, titles_from_data=True)
+                chart.set_categories(categories)
+                chart.height = 8
+                chart.width = 18
+                ranking.add_chart(chart, "H2")
+
+        return output.getvalue()
+    
+    # Encontrar archivos
+    eval_dir = Path(__file__).resolve().parents[1] / "evaluations"
+    
+    if not eval_dir.exists():
+        st.error(f"❌ Carpeta evaluations/ no encontrada en {eval_dir}")
+        return
+    
+    csv_files = sorted([f for f in eval_dir.glob("*.csv") if f.name != "ground_truth.csv"])
+
+    if not csv_files:
+        st.warning("No se encontraron archivos CSV para evaluar.")
+        return
+
+    ground_truth_path = eval_dir / "ground_truth.csv"
+    has_ground_truth = ground_truth_path.exists()
+    st.info(
+        f"{len(csv_files)} submission(s) encontrada(s). "
+        f"Ground truth: {'disponible' if has_ground_truth else 'no encontrado'}."
+    )
+
+    run_col, report_col, download_col = st.columns([1, 1, 1])
+
+    with run_col:
+        evaluate_clicked = st.button(
+            "Evaluar submissions",
+            type="primary",
+            help="Valida los CSVs y calcula Brier Scores si existe ground_truth.csv.",
+        )
+
+    if evaluate_clicked:
+        ground_truth = pd.DataFrame()
+        ground_truth_loaded = False
+        if has_ground_truth:
+            try:
+                ground_truth = pd.read_csv(ground_truth_path)
+                ground_truth_loaded = True
+            except Exception as e:
+                st.warning(f"Error al cargar ground_truth.csv: {e}")
+        else:
+            st.warning("Archivo ground_truth.csv no encontrado.")
+
+        with st.spinner("Evaluando submissions..."):
+            st.session_state["evaluation_results"] = [
+                evaluate_submission(csv_path, ground_truth) for csv_path in csv_files
+            ]
+            st.session_state["evaluation_ground_truth_loaded"] = ground_truth_loaded
+            st.session_state.pop("evaluation_excel_report", None)
+
+    results = st.session_state.get("evaluation_results")
+    ground_truth_loaded = st.session_state.get("evaluation_ground_truth_loaded", False)
+
+    with report_col:
+        generate_report_clicked = st.button(
+            "Generar reporte Excel",
+            disabled=not results,
+            help="Crea un XLSX con resumen, validacion, ranking y grafico.",
+        )
+
+    if generate_report_clicked and results:
+        with st.spinner("Generando reporte Excel..."):
+            st.session_state["evaluation_excel_report"] = build_excel_report(
+                results,
+                ground_truth_loaded,
+                eval_dir,
+            )
+        st.success("Reporte Excel listo.")
+
+    with download_col:
+        report_bytes = st.session_state.get("evaluation_excel_report")
+        st.download_button(
+            "Descargar reporte",
+            data=report_bytes or b"",
+            file_name="reporte_evaluacion_wcup2026.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            disabled=report_bytes is None,
+            help="Descarga el reporte generado.",
+        )
+
+    if not results:
+        st.info("Pulsa **Evaluar submissions** para ver la validacion y los scores.")
+        return
+
+    st.divider()
+
+    st.markdown("#### Validacion de Formato")
+    validation_df = pd.DataFrame(
+        [
+            {
+                "Submission": result["file"],
+                "Estado": "Valido" if result["valid"] else "Error",
+                "Detalles": "; ".join(result["errors"]) if result["errors"] else "OK",
+            }
+            for result in results
+        ]
+    )
+    st.dataframe(validation_df, width="stretch", hide_index=True)
+
+    st.divider()
+
+    if ground_truth_loaded:
+        st.markdown("#### Resultados de Evaluacion (Brier Score)")
+        st.markdown("*Ordenado por Score Final (menor es mejor)*")
+
+        results_sorted = sorted(
+            [r for r in results if r["valid"] and r["score_final"] is not None],
+            key=lambda x: x["score_final"],
+        )
+
+        if results_sorted:
+            scores_df = pd.DataFrame(
+                [
+                    {
+                        "Posicion": i,
+                        "Submission": result["file"],
+                        "Champion": result["brier_champion"],
+                        "Final": result["brier_final"],
+                        "Semifinal": result["brier_semifinal"],
+                        "Score Final": result["score_final"],
+                    }
+                    for i, result in enumerate(results_sorted, 1)
+                ]
+            )
+
+            def highlight_row(row):
+                """Asignar color de fondo a las primeras posiciones.
+
+                Parameters
+                ----------
+                row : pd.Series
+                    Fila del DataFrame de ranking renderizado por
+                    ``pandas.Styler``.
+
+                Returns
+                -------
+                list[str]
+                    Estilos CSS por celda para resaltar el podio.
+                """
+                if row["Posicion"] == 1:
+                    return ["background-color: #90EE90"] * len(row)
+                if row["Posicion"] == 2:
+                    return ["background-color: #87CEEB"] * len(row)
+                if row["Posicion"] == 3:
+                    return ["background-color: #FFB6C1"] * len(row)
+                return [""] * len(row)
+
+            st.dataframe(
+                scores_df.style.format({
+                    "Champion": "{:.6f}",
+                    "Final": "{:.6f}",
+                    "Semifinal": "{:.6f}",
+                    "Score Final": "{:.6f}",
+                }).apply(highlight_row, axis=1),
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.markdown("#### Comparacion de Scores Finales")
+            fig = px.bar(
+                scores_df,
+                x="Submission",
+                y="Score Final",
+                title="Score Final por Submission (Brier Score Ponderado)",
+                labels={"Score Final": "Score Final", "Submission": "Submission"},
+                color="Score Final",
+                color_continuous_scale="RdYlGn_r",
+            )
+            fig.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.info("No hay submissions validas para mostrar scores.")
+    else:
+        st.info("Para ver scores de evaluacion, crea archivo `ground_truth.csv` en la carpeta `evaluations/`")
+        st.markdown("**Estructura esperada:**")
+        st.code("team,champion,final,semifinal\nArgentina,1,1,1\nFrance,0,1,1\n...", language="csv")
+
+    return
 
 
 def main() -> None:
@@ -967,6 +1480,11 @@ def main() -> None:
 
     Configura la pagina y lanza el renderizado completo de la app.  Es
     invocado por ``app.py`` al ejecutar ``streamlit run app.py``.
+
+    Returns
+    -------
+    None
+        Inicializa y renderiza la aplicacion.
     """
     configure_page()
     render_app()

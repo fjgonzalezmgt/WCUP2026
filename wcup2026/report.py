@@ -38,7 +38,13 @@ LATEX_SPECIALS = {
 
 
 def ensure_report_dir() -> None:
-    """Crear la carpeta de reporte si no existe."""
+    """Crear la carpeta de reporte si no existe.
+
+    Returns
+    -------
+    None
+        La funcion solo garantiza la existencia de ``REPORT_DIR``.
+    """
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -72,7 +78,7 @@ def _format_pct(value: object) -> str:
     Returns
     -------
     str
-        Cadena con un decimal y el simbolo ``\%`` escapado para LaTeX,
+        Cadena con un decimal y el simbolo ``\\%`` escapado para LaTeX,
         o cadena vacia si el valor no es convertible.
     """
     try:
@@ -107,9 +113,9 @@ def _clean_markdown_inline(text: str) -> str:
 def markdown_to_latex(markdown_text: str | None) -> str:
     """Convertir markdown basico del LLM a comandos LaTeX sencillos.
 
-    Convierte encabezados ``##``/``###`` a ``\section*``/``\subsection*``,
+    Convierte encabezados ``##``/``###`` a ``\\section*``/``\\subsection*``,
     listas con guion o asterisco a entornos ``itemize`` y parrafos de texto
-    plano con ``\par``.
+    plano con ``\\par``.
 
     Parameters
     ----------
@@ -135,6 +141,12 @@ def markdown_to_latex(markdown_text: str | None) -> str:
 
         Modifica ``output`` e ``in_items`` del scope envolvente para
         anadir ``\\end{itemize}`` solo cuando hay una lista en curso.
+
+        Returns
+        -------
+        None
+            La funcion actualiza el estado de la conversion en el scope
+            envolvente.
         """
         nonlocal in_items
         if in_items:
@@ -205,7 +217,7 @@ def build_summary(results: pd.DataFrame, params: SimParams | None) -> str:
 def build_kpi_strip(results: pd.DataFrame) -> str:
     """Crear el bloque LaTeX de tarjetas KPI para la primera pagina.
 
-    Genera una fila de cuatro tarjetas con el comando ``\qakpicard``
+    Genera una fila de cuatro tarjetas con el comando ``\\qakpicard``
     mostrando favorito, probabilidad de final, perseguidor y rating lider.
 
     Parameters

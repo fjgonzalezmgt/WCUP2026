@@ -32,6 +32,8 @@ Este proyecto es solo para fines informativos, educativos y analíticos. Las pro
 | **Ratings editables** | Elo aproximado, ataque, defensa, plantilla y forma ajustables directamente en la tabla interactiva de la UI. |
 | **Visualizaciones interactivas** | Gráficos de barras de Plotly por ronda, tabla de grupos y comparador de duelos directos. |
 | **Exportación CSV** | Botón de descarga que genera un CSV con los resultados de la simulación, listo para subir a la [Quiniela de Modelos Predictivos WCUP 2026](https://www.kaggle.com/competitions/quiniela-de-modelos-predictivos-wcup-2026) en Kaggle. |
+| **Evaluación manual de submissions** | La pestaña **Evaluar** valida los CSVs de `evaluations/` solo cuando el usuario pulsa **Evaluar submissions**. Si existe `ground_truth.csv`, calcula Brier Scores por etapa y ranking final. |
+| **Reporte Excel de evaluación** | Botones para **Generar reporte Excel** y **Descargar reporte** con hojas de resumen, validación, ranking y gráfico de Score Final. |
 
 ---
 
@@ -43,13 +45,15 @@ flowchart LR
     B --> C["② Editar ratings\nmanualmente (opcional)"]
     C --> D["③ Configurar parámetros\nen la barra lateral"]
     D --> E["④ Pulsar\n'Simular torneo'"]
-    E --> F["⑤ Explorar pestañas\nPredicción · Grupos · Modelo · LLM"]
+    E --> F["⑤ Explorar pestañas\nPredicción · Bracket · Grupos · Modelo · LLM · Reporte"]
     F --> G["⑥ Buscar noticias y\ngenerar análisis LLM (opcional)"]
-    G --> H([Resultados])
+    G --> H["⑦ Evaluar submissions\ny generar Excel (opcional)"]
+    H --> I([Resultados])
 
     style B fill:#412991,color:#fff
     style E fill:#e03030,color:#fff
     style G fill:#412991,color:#fff
+    style H fill:#0b8043,color:#fff
 ```
 
 ---
@@ -94,6 +98,42 @@ La novedad frente a modelos clásicos es que **el LLM no solo interpreta salidas
 
 ---
 
+## Evaluación de submissions
+
+La pestaña **Evaluar** permite revisar archivos de predicción sin que la app lo haga automáticamente al cargar la vista. El usuario controla el flujo con tres botones:
+
+1. **Evaluar submissions**: busca CSVs en `evaluations/`, valida formato, equipos, duplicados y probabilidades en rango `[0, 1]`.
+2. **Generar reporte Excel**: crea un archivo XLSX en memoria con resumen, validación, ranking y gráfico.
+3. **Descargar reporte**: descarga `reporte_evaluacion_wcup2026.xlsx` cuando el reporte ya fue generado.
+
+Los archivos de submission deben tener esta estructura:
+
+```csv
+team,prob_champion,prob_final,prob_semifinal
+Argentina,0.1650,0.2810,0.4320
+France,0.1420,0.2510,0.4010
+```
+
+Para calcular scores reales, coloca `ground_truth.csv` dentro de `evaluations/` con:
+
+```csv
+team,champion,final,semifinal
+Argentina,1,1,1
+France,0,1,1
+```
+
+El score principal es un Brier Score ponderado:
+
+| Etapa | Peso |
+|---|---:|
+| Campeón (`prob_champion`) | 50% |
+| Final (`prob_final`) | 30% |
+| Semifinal (`prob_semifinal`) | 20% |
+
+Menor score significa mejor calibración contra el resultado real.
+
+---
+
 ## Arquitectura de módulos
 
 ```mermaid
@@ -125,11 +165,19 @@ graph TD
         per["persistence.py\nEstado de sesión"]
     end
 
+    subgraph Eval["Evaluación"]
+        evalpy["evaluations/evaluate.py\nValidación CLI"]
+        evalcsv[("evaluations/\nsubmissions + ground_truth.csv")]
+        xlsx["reporte_evaluacion_wcup2026.xlsx"]
+    end
+
     APP --> ui
     ui --> sim
     ui --> llm
     ui --> data
     ui --> per
+    ui --> evalcsv
+    ui --> xlsx
     sim --> brk
     sim --> data
     sim --> params
@@ -137,11 +185,13 @@ graph TD
     data --> csv
     llm --> csv
     ui --> rep
+    evalpy --> evalcsv
 
     style APP fill:#e03030,color:#fff
     style sim fill:#1a73e8,color:#fff
     style llm fill:#412991,color:#fff
     style csv fill:#0b8043,color:#fff
+    style xlsx fill:#0b8043,color:#fff
 ```
 
 ---
@@ -323,6 +373,14 @@ WCUP2026/
 ├── requirements.txt        # Dependencias pip alternativas
 ├── data/
 │   └── teams_seed.csv      # Ratings base de los 48 equipos (actualizable con IA)
+├── evaluations/
+│   ├── evaluate.py         # Validador/evaluador CLI de submissions
+│   ├── ground_truth.csv    # Resultados reales para calcular Brier Scores
+│   └── *.csv               # Submissions a evaluar desde la pestaña Evaluar
+├── reporte/
+│   └── ...                 # Archivos LaTeX/PDF generados
+├── resultados/
+│   └── ...                 # Persistencia de simulaciones y análisis
 └── wcup2026/
     ├── config.py           # Rutas, URLs, grupos, columnas y colores
     ├── parameters.py       # Parámetros del simulador (N simulaciones, etc.)
@@ -330,6 +388,8 @@ WCUP2026/
     ├── bracket.py          # Estructura de ronda de 32 y eliminatorias
     ├── simulator.py        # Poisson, grupos, eliminatorias y Monte Carlo
     ├── llm.py              # Actualización de ratings, noticias e interpretación con OpenAI
+    ├── persistence.py      # Persistencia de resultados y estado recuperable
+    ├── report.py           # Reporte LaTeX/PDF de simulación
     └── ui.py               # Componentes visuales y flujo de Streamlit
 ```
 
