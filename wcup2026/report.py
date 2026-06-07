@@ -36,6 +36,22 @@ LATEX_SPECIALS = {
     "^": r"\textasciicircum{}",
 }
 
+BRACKET_ROUND_ORDER = {
+    "round_of_32": 0,
+    "round_of_16": 1,
+    "quarterfinal": 2,
+    "semifinal": 3,
+    "final": 4,
+}
+
+BRACKET_ROUND_LABELS = {
+    "round_of_32": "Ronda de 32",
+    "round_of_16": "Octavos",
+    "quarterfinal": "Cuartos",
+    "semifinal": "Semifinal",
+    "final": "Final",
+}
+
 
 def ensure_report_dir() -> None:
     """Crear la carpeta de reporte si no existe.
@@ -82,6 +98,8 @@ def _format_pct(value: object) -> str:
         o cadena vacia si el valor no es convertible.
     """
     try:
+        if pd.isna(value):
+            return ""
         return f"{float(value):.1f}\\%"
     except (TypeError, ValueError):
         return ""
@@ -383,10 +401,11 @@ def build_group_table(results: pd.DataFrame, teams: pd.DataFrame) -> str:
 
 
 def build_bracket_chart(bracket_probable: pd.DataFrame) -> str:
-    """Crear un cuadro de eliminacion top-down en TikZ desde cuartos de final.
+    """Crear una tabla ordenada con todo el bracket mas probable.
 
-    Dibuja cuartos, semis y final de arriba hacia abajo con lineas de
-    conexion y porcentaje del ganador mas probable.
+    Muestra cada partido desde ronda de 32 hasta la final, ordenado por
+    etapa y numero de partido.  El ganador probable se resalta dentro de la
+    llave y se incluye su porcentaje estimado cuando esta disponible.
 
     Parameters
     ----------
@@ -397,132 +416,62 @@ def build_bracket_chart(bracket_probable: pd.DataFrame) -> str:
     Returns
     -------
     str
-        Fragmento LaTeX con el entorno ``tikzpicture`` del bracket.
+        Fragmento LaTeX con una tabla ``longtable`` del bracket completo.
     """
     if bracket_probable is None or bracket_probable.empty:
         return r"\qaempty{No hay datos de bracket disponibles.}"
 
-    late = {"quarterfinal", "semifinal", "final"}
-    bp = bracket_probable[bracket_probable["round"].isin(late)].copy()
-    if bp.empty:
-        return r"\qaempty{No hay datos de bracket disponibles.}"
+    required = {"round", "match_id", "team_a", "team_b", "winner", "winner_pct"}
+    if not required.issubset(bracket_probable.columns):
+        return r"\qaempty{El bracket guardado no tiene las columnas esperadas.}"
 
-    qf = bp[bp["round"] == "quarterfinal"].reset_index(drop=True)
-    sf = bp[bp["round"] == "semifinal"].reset_index(drop=True)
-    fi = bp[bp["round"] == "final"].reset_index(drop=True)
+    bp = bracket_probable.copy()
+    bp["_round_order"] = bp["round"].map(BRACKET_ROUND_ORDER).fillna(99)
+    bp = bp.sort_values(["_round_order", "match_id"]).reset_index(drop=True)
 
-    # Posiciones x para 4 partidos de cuartos (2 por cada lado del cuadro)
-    # Layout: QF(0), QF(1) -> SF(0) -> Final; QF(2), QF(3) -> SF(1) -> Final
-    # x positions (cm): QF pares en 0 y 3.2, SF en 1.6, Final en centro
-    xpos_qf = [0.0, 3.2, 6.4, 9.6]
-    xpos_sf = [1.6, 8.0]
-    xpos_fi = [4.8]
+    def team_label(team: object, winner: object) -> str:
+        """Formatear el equipo resaltando al ganador probable."""
+        text = latex_escape(team)
+        if str(team) == str(winner):
+            return rf"\textcolor{{qaturquoise}}{{\textbf{{{text}}}}}"
+        return text
 
-    y_qf = 0.0
-    y_sf = -2.2
-    y_fi = -4.4
-
-    node_w = 2.8   # ancho caja en cm
-    node_h = 0.55  # alto por equipo
-    gap = 0.12     # espacio entre team_a y team_b
-
-    lines: list[str] = [
-        r"\begin{center}",
-        r"\begin{tikzpicture}[x=1cm, y=1cm, font=\small]",
+    rows = [
+        r"\begingroup",
+        r"\footnotesize",
+        r"\rowcolors{2}{qasoft}{white}",
+        r"\begin{longtable}{@{}p{0.15\linewidth}p{0.08\linewidth}p{0.37\linewidth}p{0.22\linewidth}r@{}}",
+        r"\rowcolor{qablue}",
+        r"\textcolor{white}{\textbf{Ronda}} & \textcolor{white}{\textbf{Partido}} & \textcolor{white}{\textbf{Llave probable}} & \textcolor{white}{\textbf{Ganador}} & \textcolor{white}{\textbf{Prob.}} \\",
+        r"\endhead",
     ]
-
-    def match_node(x: float, y: float, team_a: str, team_b: str, winner: str, pct: object) -> list[str]:
-        """Emitir un nodo TikZ de partido con dos equipos y marcar al ganador.
-
-        Parameters
-        ----------
-        x : float
-            Coordenada X del centro del nodo (cm).
-        y : float
-            Coordenada Y del centro del nodo (cm).
-        team_a : str
-            Nombre del primer equipo (cuadro superior).
-        team_b : str
-            Nombre del segundo equipo (cuadro inferior).
-        winner : str
-            Nombre del equipo ganador; debe coincidir con ``team_a`` o
-            ``team_b`` para que se resalte.
-        pct : object
-            Porcentaje de victorias del ganador.  Si no es convertible a
-            ``float`` se omite.
-
-        Returns
-        -------
-        list[str]
-            Lista de comandos TikZ que dibujan los dos rectangulos del
-            partido y las etiquetas con los nombres y porcentaje.
-        """
-        ta = latex_escape(team_a)
-        tb = latex_escape(team_b)
-        tw = latex_escape(winner)
-        pct_str = ""
-        try:
-            pct_str = f" {float(pct):.0f}\\%"
-        except (TypeError, ValueError):
-            pass
-
-        color_a = "qaturquoise" if winner == team_a else "qaink"
-        color_b = "qaturquoise" if winner == team_b else "qaink"
-        label_a = rf"\textbf{{{ta}}}" if winner == team_a else ta
-        label_b = rf"\textbf{{{tb}}}" if winner == team_b else tb
-
-        half_w = node_w / 2
-        result = [
-            # caja contenedora
-            rf"\draw[draw=qaline, fill=qasoft, rounded corners=2pt] "
-            rf"({x - half_w:.2f},{y + gap / 2:.2f}) rectangle ({x + half_w:.2f},{y + gap / 2 + node_h:.2f});",
-            rf"\draw[draw=qaline, fill=qasoft, rounded corners=2pt] "
-            rf"({x - half_w:.2f},{y - gap / 2 - node_h:.2f}) rectangle ({x + half_w:.2f},{y - gap / 2:.2f});",
-            # etiquetas equipos
-            rf"\node[anchor=west, text={color_a}] at ({x - half_w + 0.08:.2f},{y + gap / 2 + node_h / 2:.2f}) {{{label_a}}};",
-            rf"\node[anchor=west, text={color_b}] at ({x - half_w + 0.08:.2f},{y - gap / 2 - node_h / 2:.2f}) {{{label_b}}};",
-            # porcentaje ganador
-            rf"\node[anchor=east, text=qamutex, font=\scriptsize] at ({x + half_w - 0.05:.2f},{y + gap / 2 + node_h / 2:.2f}) {{{pct_str}}};",
-        ]
-        return result
-
-    # --- Cuartos ---
-    qf_centers: list[tuple[float, float]] = []
-    for i, row in qf.iterrows():
-        x = xpos_qf[i] if i < len(xpos_qf) else float(i) * 3.2
-        lines += match_node(x, y_qf, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
-        qf_centers.append((x, y_qf))
-
-    # --- Semis ---
-    sf_centers: list[tuple[float, float]] = []
-    for i, row in sf.iterrows():
-        x = xpos_sf[i] if i < len(xpos_sf) else xpos_sf[-1]
-        lines += match_node(x, y_sf, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
-        sf_centers.append((x, y_sf))
-        # Lineas desde los dos cuartos que alimentan esta semi
-        for qi in range(2):
-            qx, _ = qf_centers[i * 2 + qi] if (i * 2 + qi) < len(qf_centers) else (x, y_qf)
-            lines.append(
-                rf"\draw[draw=qaline] ({qx:.2f},{y_qf - (gap / 2 + node_h):.2f}) -- "
-                rf"({qx:.2f},{(y_qf + y_sf) / 2:.2f}) -- "
-                rf"({x:.2f},{(y_qf + y_sf) / 2:.2f}) -- "
-                rf"({x:.2f},{y_sf + gap / 2 + node_h:.2f});"
+    previous_round: str | None = None
+    for _, row in bp.iterrows():
+        round_name = str(row["round"])
+        round_label = BRACKET_ROUND_LABELS.get(round_name, round_name)
+        shown_round = round_label if round_name != previous_round else ""
+        previous_round = round_name
+        winner = row["winner"]
+        matchup = (
+            team_label(row["team_a"], winner)
+            + r" \textcolor{qamutex}{vs.} "
+            + team_label(row["team_b"], winner)
+        )
+        rows.append(
+            " & ".join(
+                [
+                    latex_escape(shown_round),
+                    str(row["match_id"]),
+                    matchup,
+                    team_label(winner, winner),
+                    _format_pct(row["winner_pct"]),
+                ]
             )
+            + r" \\"
+        )
 
-    # --- Final ---
-    for i, row in fi.iterrows():
-        x = xpos_fi[0]
-        lines += match_node(x, y_fi, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
-        for si, (sx, _) in enumerate(sf_centers):
-            lines.append(
-                rf"\draw[draw=qaline] ({sx:.2f},{y_sf - (gap / 2 + node_h):.2f}) -- "
-                rf"({sx:.2f},{(y_sf + y_fi) / 2:.2f}) -- "
-                rf"({x:.2f},{(y_sf + y_fi) / 2:.2f}) -- "
-                rf"({x:.2f},{y_fi + gap / 2 + node_h:.2f});"
-            )
-
-    lines += [r"\end{tikzpicture}", r"\end{center}"]
-    return "\n".join(lines)
+    rows.extend([r"\end{longtable}", r"\endgroup"])
+    return "\n".join(rows)
 
 
 def render_report_tex(

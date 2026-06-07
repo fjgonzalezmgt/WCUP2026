@@ -126,7 +126,7 @@ def build_analysis_payload(
     bracket_probable : pd.DataFrame or None, optional
         Cuadro de eliminacion mas probable calculado sobre N simulaciones.
         Si se proporciona, se incluye en el payload como ``bracket_probable``
-        filtrando solo cuartos, semis y final para mantenerlo compacto.
+        ordenado desde ronda de 32 hasta la final.
 
     Returns
     -------
@@ -146,8 +146,16 @@ def build_analysis_payload(
     }
 
     if bracket_probable is not None and not bracket_probable.empty:
-        late_rounds = {"quarterfinal", "semifinal", "final"}
-        bp = bracket_probable[bracket_probable["round"].isin(late_rounds)].copy()
+        round_order = {
+            "round_of_32": 0,
+            "round_of_16": 1,
+            "quarterfinal": 2,
+            "semifinal": 3,
+            "final": 4,
+        }
+        bp = bracket_probable.copy()
+        bp["_round_order"] = bp["round"].map(round_order).fillna(99)
+        bp = bp.sort_values(["_round_order", "match_id"]).drop(columns="_round_order")
         bp["winner_pct"] = bp["winner_pct"].where(bp["winner_pct"].notna(), other=None)
         payload["bracket_probable"] = bp[
             ["round", "match_id", "team_a", "team_b", "winner", "winner_pct"]
@@ -169,8 +177,8 @@ def build_analysis_payload(
             "'## Escenarios'. En la ultima seccion cierra con los escenarios base, conservador "
             "y optimista. "
             "Si se incluye 'bracket_probable', incorpora sus caminos al titulo en el analisis: "
-            "menciona que equipos llegan a cuartos, semis y la final segun el modelo, cuales son "
-            "los duelos clave del cuadro y que tan probable es cada uno segun el porcentaje. "
+            "menciona las llaves probables desde ronda de 32, octavos, cuartos, semis y final, "
+            "cuales son los duelos clave del cuadro y que tan probable es cada uno segun el porcentaje. "
             "No recomiendes ajustes de pesos, ratings, variables ni escalas numericas del modelo."
     )
     return payload
