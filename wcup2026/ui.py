@@ -10,6 +10,7 @@ de datos.  El punto de entrada principal es ``main()`` llamado desde
 from __future__ import annotations
 
 import html
+import importlib
 import json
 from io import BytesIO
 from pathlib import Path
@@ -52,7 +53,7 @@ from wcup2026.persistence import (
     save_llm_analysis,
     save_montecarlo_results,
 )
-from wcup2026.report import generate_report
+import wcup2026.report as report_module
 from wcup2026.simulator import describe_matchup, simulate_bracket_most_probable, simulate_bracket_sample, simulate_many
 
 
@@ -628,7 +629,8 @@ def render_report_view(results: pd.DataFrame | None, df: pd.DataFrame) -> None:
     if st.button("Generar reporte", type="primary", help="Crea el archivo LaTeX final y compila reporte_wcup2026.pdf con pdflatex."):
         try:
             with st.spinner("Generando reporte LaTeX y compilando PDF..."):
-                tex_path, pdf_path = generate_report(
+                fresh_report_module = importlib.reload(report_module)
+                tex_path, pdf_path = fresh_report_module.generate_report(
                     results=results,
                     teams=df,
                     llm_text=st.session_state.get("llm_answer"),
