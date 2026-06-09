@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from wcup2026.bracket import R32_MATCHES
 from wcup2026.config import (
     REPORT_DIR,
     REPORT_PDF_PATH,
@@ -354,58 +355,281 @@ def build_top_table(results: pd.DataFrame, limit: int = 12) -> str:
     return "\n".join(rows)
 
 
-def build_group_table(results: pd.DataFrame, teams: pd.DataFrame) -> str:
-    """Crear la tabla LaTeX compacta con los dos primeros favoritos de cada grupo.
+def build_group_table(
+    results: pd.DataFrame,
+    teams: pd.DataFrame,
+    bracket_probable: pd.DataFrame | None = None,
+) -> str:
+    """Crear la tabla LaTeX del bracket probable que nace de cada grupo.
+
+    Para cada grupo muestra el equipo mas probable como ganador, sublider,
+    candidato a mejor tercero y eliminado, y conecta los clasificados con
+    su cruce probable de ronda de 32 cuando el bracket esta disponible.
 
     Parameters
     ----------
     results : pd.DataFrame
         DataFrame de resultados con columnas ``team``, ``overall``,
+        ``group_winner_pct``, ``group_runner_up_pct``, ``best_third_pct``,
         ``round_of_32_pct`` y ``champion_pct``.
     teams : pd.DataFrame
         DataFrame original de equipos con columnas ``team`` y ``group``.
+    bracket_probable : pd.DataFrame or None, optional
+        DataFrame del cuadro mas probable para enlazar cada clasificado con
+        su partido de ronda de 32.
 
     Returns
     -------
     str
-        Fragmento LaTeX con el entorno ``longtable`` de favoritos por grupo.
+        Fragmento LaTeX con el entorno ``longtable`` del bracket por grupo.
     """
+    result_columns = [
+        "team",
+        "overall",
+        "group_winner_pct",
+        "group_runner_up_pct",
+        "best_third_pct",
+        "round_of_32_pct",
+    ]
     merged = teams[["team", "group"]].merge(
-        results[["team", "overall", "round_of_32_pct", "champion_pct"]],
+        results[result_columns],
         on="team",
         how="left",
     )
-    leaders = merged.sort_values(["group", "overall"], ascending=[True, False]).groupby("group").head(2)
+
+    direct_slot_match: dict[str, int] = {}
+    third_slot_matches: dict[str, list[int]] = {}
+    for match_id, (left_ref, right_ref) in R32_MATCHES.items():
+        for ref in (left_ref, right_ref):
+            if ref[0] == "slot":
+                direct_slot_match[str(ref[1])] = match_id
+            elif ref[0] == "third":
+                for group in ref[1]:
+                    third_slot_matches.setdefault(str(group), []).append(match_id)
+
+    r32_by_team: dict[str, pd.Series] = {}
+    if bracket_probable is not None and not bracket_probable.empty:
+        r32 = bracket_probable[bracket_probable["round"] == "round_of_32"]
+        for _, row in r32.iterrows():
+            r32_by_team[str(row["team_a"])] = row
+            r32_by_team[str(row["team_b"])] = row
+
+    def select_group_rows(group_rows: pd.DataFrame) -> list[dict[str, object]]:
+        """Escoger los roles probables de un grupo sin repetir equipos."""
+        remaining = group_rows.copy()
+        selected: list[dict[str, object]] = []
+
+        role_specs = [
+            ("1{group}", "Ganador grupo", "group_winner_pct"),
+            ("2{group}", "Segundo grupo", "group_runner_up_pct"),
+            ("3{group}", "Mejor tercero", "best_third_pct"),
+        ]
+        for slot_template, role, probability_column in role_specs:
+            if remaining.empty:
+                break
+            row = remaining.sort_values(
+                [probability_column, "round_of_32_pct", "overall"],
+                ascending=False,
+            ).iloc[0]
+            selected.append(
+                {
+                    "slot": slot_template.format(group=row["group"]),
+                    "role": role,
+                    "probability": row[probability_column],
+                    "row": row,
+                }
+            )
+            remaining = remaining[remaining["team"] != row["team"]]
+
+        for _, row in remaining.sort_values(["round_of_32_pct", "overall"], ascending=False).iterrows():
+            selected.append(
+                {
+                    "slot": "Fuera",
+                    "role": "Eliminado",
+                    "probability": None,
+                    "row": row,
+                }
+            )
+        return selected
+
+    def r32_context(team: object, slot: str, group: object) -> tuple[str, str]:
+        """Obtener partido FIFA y cruce probable de R32 para un equipo."""
+        if slot == "Fuera":
+            return "", r"\textcolor{qamutex}{No entra al bracket probable}"
+
+        team_name = str(team)
+        row = r32_by_team.get(team_name)
+        if row is not None:
+            opponent = row["team_b"] if str(row["team_a"]) == team_name else row["team_a"]
+            winner = row["winner"]
+            pct = _format_pct(row.get("winner_pct"))
+            pct_text = f" ({pct})" if pct else ""
+            winner_text = latex_escape(winner)
+            if str(winner) == team_name:
+                winner_text = rf"\textcolor{{qaturquoise}}{{\textbf{{{winner_text}}}}}"
+            return (
+                str(row["match_id"]),
+                rf"vs. {latex_escape(opponent)}; gana {winner_text}{pct_text}",
+            )
+
+        if slot.startswith(("1", "2")):
+            match_id = direct_slot_match.get(slot, "")
+            return str(match_id), r"\textcolor{qamutex}{Cruce no disponible en el bracket probable}"
+
+        allowed = third_slot_matches.get(str(group), [])
+        match_text = ", ".join(str(match_id) for match_id in allowed)
+        return match_text, r"\textcolor{qamutex}{No clasifica como mejor tercero en el bracket probable}"
+
     rows = [
+        r"\begingroup",
+        r"\footnotesize",
+        r"{\color{qamutex}Cada grupo muestra su salida probable hacia la ronda de 32. El slot 3X solo entra si ese tercero aparece dentro de los ocho mejores terceros del bracket probable.}\par\vspace{0.35em}",
         r"\rowcolors{2}{qasoft}{white}",
-        r"\begin{longtable}{llrrr}",
+        r"\begin{longtable}{@{}p{0.07\linewidth}p{0.08\linewidth}p{0.20\linewidth}r p{0.08\linewidth}p{0.39\linewidth}@{}}",
         r"\rowcolor{qablue}",
-        r"\textcolor{white}{\textbf{Grupo}} & \textcolor{white}{\textbf{Seleccion}} & \textcolor{white}{\textbf{Rating}} & \textcolor{white}{\textbf{R32}} & \textcolor{white}{\textbf{Campeon}} \\",
+        r"\textcolor{white}{\textbf{Grupo}} & \textcolor{white}{\textbf{Slot}} & \textcolor{white}{\textbf{Seleccion}} & \textcolor{white}{\textbf{Prob.}} & \textcolor{white}{\textbf{FIFA}} & \textcolor{white}{\textbf{Cruce probable}} \\",
         r"\endhead",
     ]
-    for _, row in leaders.iterrows():
-        rows.append(
-            " & ".join(
-                [
-                    latex_escape(row["group"]),
-                    latex_escape(row["team"]),
-                    f"{float(row['overall']):.1f}",
-                    _format_pct(row["round_of_32_pct"]),
-                    _format_pct(row["champion_pct"]),
-                ]
+    for group, group_rows in merged.groupby("group", sort=True):
+        for position, selection in enumerate(select_group_rows(group_rows), start=1):
+            row = selection["row"]
+            group_label = latex_escape(group) if position == 1 else ""
+            match_id, matchup = r32_context(row["team"], str(selection["slot"]), group)
+            rows.append(
+                " & ".join(
+                    [
+                        group_label,
+                        latex_escape(selection["slot"]),
+                        latex_escape(row["team"]),
+                        _format_pct(selection["probability"]),
+                        latex_escape(match_id),
+                        matchup,
+                    ]
+                )
+                + r" \\"
             )
-            + r" \\"
-        )
-    rows.extend([r"\end{longtable}"])
+    rows.extend([r"\end{longtable}", r"\endgroup"])
     return "\n".join(rows)
+
+
+def build_bracket_visual(bracket_probable: pd.DataFrame | None) -> str:
+    """Crear un grafico TikZ compacto del bracket probable desde cuartos.
+
+    El diagrama resume la parte final del cuadro (cuartos, semifinales y
+    final) como vista visual previa a las tablas detalladas.
+
+    Parameters
+    ----------
+    bracket_probable : pd.DataFrame or None
+        DataFrame del cuadro mas probable con columnas ``round``,
+        ``match_id``, ``team_a``, ``team_b``, ``winner``, ``winner_pct``.
+
+    Returns
+    -------
+    str
+        Fragmento LaTeX con el entorno ``tikzpicture`` del bracket.
+    """
+    if bracket_probable is None or bracket_probable.empty:
+        return r"\qaempty{No hay datos de bracket disponibles.}"
+
+    required = {"round", "team_a", "team_b", "winner", "winner_pct"}
+    if not required.issubset(bracket_probable.columns):
+        return r"\qaempty{El bracket guardado no tiene las columnas esperadas.}"
+
+    late = {"quarterfinal", "semifinal", "final"}
+    bp = bracket_probable[bracket_probable["round"].isin(late)].copy()
+    if bp.empty:
+        return r"\qaempty{No hay datos de bracket disponibles.}"
+
+    bp["_round_order"] = bp["round"].map(BRACKET_ROUND_ORDER).fillna(99)
+    bp = bp.sort_values(["_round_order", "match_id"]).reset_index(drop=True)
+
+    qf = bp[bp["round"] == "quarterfinal"].reset_index(drop=True)
+    sf = bp[bp["round"] == "semifinal"].reset_index(drop=True)
+    fi = bp[bp["round"] == "final"].reset_index(drop=True)
+
+    xpos_qf = [0.0, 3.2, 6.4, 9.6]
+    xpos_sf = [1.6, 8.0]
+    xpos_fi = [4.8]
+
+    y_qf = 0.0
+    y_sf = -2.2
+    y_fi = -4.4
+
+    node_w = 2.8
+    node_h = 0.55
+    gap = 0.12
+
+    lines: list[str] = [
+        r"\begin{center}",
+        r"\begin{tikzpicture}[x=1cm, y=1cm, font=\small]",
+    ]
+
+    def match_node(x: float, y: float, team_a: str, team_b: str, winner: str, pct: object) -> list[str]:
+        """Emitir un nodo TikZ de partido con dos equipos y ganador."""
+        ta = latex_escape(team_a)
+        tb = latex_escape(team_b)
+        pct_str = _format_pct(pct)
+
+        color_a = "qaturquoise" if winner == team_a else "qaink"
+        color_b = "qaturquoise" if winner == team_b else "qaink"
+        label_a = rf"\textbf{{{ta}}}" if winner == team_a else ta
+        label_b = rf"\textbf{{{tb}}}" if winner == team_b else tb
+
+        pct_y = y + gap / 2 + node_h / 2 if winner == team_a else y - gap / 2 - node_h / 2
+        half_w = node_w / 2
+        return [
+            rf"\draw[draw=qaline, fill=qasoft, rounded corners=2pt] "
+            rf"({x - half_w:.2f},{y + gap / 2:.2f}) rectangle ({x + half_w:.2f},{y + gap / 2 + node_h:.2f});",
+            rf"\draw[draw=qaline, fill=qasoft, rounded corners=2pt] "
+            rf"({x - half_w:.2f},{y - gap / 2 - node_h:.2f}) rectangle ({x + half_w:.2f},{y - gap / 2:.2f});",
+            rf"\node[anchor=west, text={color_a}] at ({x - half_w + 0.08:.2f},{y + gap / 2 + node_h / 2:.2f}) {{{label_a}}};",
+            rf"\node[anchor=west, text={color_b}] at ({x - half_w + 0.08:.2f},{y - gap / 2 - node_h / 2:.2f}) {{{label_b}}};",
+            rf"\node[anchor=east, text=qamutex, font=\scriptsize] at ({x + half_w - 0.05:.2f},{pct_y:.2f}) {{{pct_str}}};",
+        ]
+
+    qf_centers: list[tuple[float, float]] = []
+    for i, row in qf.iterrows():
+        x = xpos_qf[i] if i < len(xpos_qf) else float(i) * 3.2
+        lines += match_node(x, y_qf, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
+        qf_centers.append((x, y_qf))
+
+    sf_centers: list[tuple[float, float]] = []
+    for i, row in sf.iterrows():
+        x = xpos_sf[i] if i < len(xpos_sf) else xpos_sf[-1]
+        lines += match_node(x, y_sf, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
+        sf_centers.append((x, y_sf))
+        for qi in range(2):
+            qx, _ = qf_centers[i * 2 + qi] if (i * 2 + qi) < len(qf_centers) else (x, y_qf)
+            lines.append(
+                rf"\draw[draw=qaline] ({qx:.2f},{y_qf - (gap / 2 + node_h):.2f}) -- "
+                rf"({qx:.2f},{(y_qf + y_sf) / 2:.2f}) -- "
+                rf"({x:.2f},{(y_qf + y_sf) / 2:.2f}) -- "
+                rf"({x:.2f},{y_sf + gap / 2 + node_h:.2f});"
+            )
+
+    for _, row in fi.iterrows():
+        x = xpos_fi[0]
+        lines += match_node(x, y_fi, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
+        for sx, _ in sf_centers:
+            lines.append(
+                rf"\draw[draw=qaline] ({sx:.2f},{y_sf - (gap / 2 + node_h):.2f}) -- "
+                rf"({sx:.2f},{(y_sf + y_fi) / 2:.2f}) -- "
+                rf"({x:.2f},{(y_sf + y_fi) / 2:.2f}) -- "
+                rf"({x:.2f},{y_fi + gap / 2 + node_h:.2f});"
+            )
+
+    lines += [r"\end{tikzpicture}", r"\end{center}"]
+    return "\n".join(lines)
 
 
 def build_bracket_chart(bracket_probable: pd.DataFrame) -> str:
     """Crear una tabla ordenada con todo el bracket mas probable.
 
-    Muestra cada partido desde ronda de 32 hasta la final, ordenado por
-    etapa y numero de partido.  El ganador probable se resalta dentro de la
-    llave y se incluye su porcentaje estimado cuando esta disponible.
+    Muestra cada cruce desde ronda de 32 hasta la final, ordenado por etapa
+    y con el numero oficial FIFA del partido.  El ganador probable se
+    resalta dentro de la llave y se incluye su porcentaje estimado cuando
+    esta disponible.
 
     Parameters
     ----------
@@ -439,10 +663,11 @@ def build_bracket_chart(bracket_probable: pd.DataFrame) -> str:
     rows = [
         r"\begingroup",
         r"\footnotesize",
+        r"{\color{qamutex}La numeracion corresponde al calendario oficial FIFA; la eliminacion directa empieza en el partido 73.}\par\vspace{0.35em}",
         r"\rowcolors{2}{qasoft}{white}",
-        r"\begin{longtable}{@{}p{0.15\linewidth}p{0.08\linewidth}p{0.37\linewidth}p{0.22\linewidth}r@{}}",
+        r"\begin{longtable}{@{}p{0.15\linewidth}p{0.08\linewidth}p{0.38\linewidth}p{0.22\linewidth}r@{}}",
         r"\rowcolor{qablue}",
-        r"\textcolor{white}{\textbf{Ronda}} & \textcolor{white}{\textbf{Partido}} & \textcolor{white}{\textbf{Llave probable}} & \textcolor{white}{\textbf{Ganador}} & \textcolor{white}{\textbf{Prob.}} \\",
+        r"\textcolor{white}{\textbf{Ronda}} & \textcolor{white}{\textbf{FIFA}} & \textcolor{white}{\textbf{Llave probable}} & \textcolor{white}{\textbf{Ganador}} & \textcolor{white}{\textbf{Prob.}} \\",
         r"\endhead",
     ]
     previous_round: str | None = None
@@ -518,7 +743,8 @@ def render_report_tex(
         "<<KPI_STRIP>>": build_kpi_strip(results),
         "<<CHAMPION_CHART>>": build_champion_chart(results),
         "<<TOP_TABLE>>": build_top_table(results),
-        "<<GROUP_TABLE>>": build_group_table(results, teams),
+        "<<BRACKET_VISUAL>>": build_bracket_visual(bracket_probable),
+        "<<GROUP_TABLE>>": build_group_table(results, teams, bracket_probable),
         "<<BRACKET_CHART>>": build_bracket_chart(bracket_probable),
         "<<LLM_RESULT>>": markdown_to_latex(llm_text),
     }
