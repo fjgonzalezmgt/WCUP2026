@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -118,6 +120,39 @@ def inject_style() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def apply_plotly_theme(
+    fig: go.Figure,
+    *,
+    height: int | None = None,
+    showlegend: bool | None = None,
+) -> go.Figure:
+    """Aplicar estilo visual consistente a figuras Plotly de la app."""
+    layout_updates = {
+        "paper_bgcolor": "rgba(0,0,0,0)",
+        "plot_bgcolor": "rgba(0,0,0,0)",
+        "font": {"color": "#1f2937", "family": "Arial, sans-serif"},
+        "margin": {"l": 10, "r": 18, "t": 42, "b": 32},
+        "hoverlabel": {"bgcolor": "#111827", "font": {"color": "#f9fafb", "size": 12}},
+    }
+    if height is not None:
+        layout_updates["height"] = height
+    if showlegend is not None:
+        layout_updates["showlegend"] = showlegend
+    fig.update_layout(**layout_updates)
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor="rgba(148, 163, 184, 0.22)",
+        zeroline=False,
+        linecolor="rgba(148, 163, 184, 0.35)",
+    )
+    fig.update_yaxes(
+        showgrid=False,
+        zeroline=False,
+        linecolor="rgba(148, 163, 184, 0.35)",
+    )
+    return fig
 
 
 def render_copy_button(text: str, key: str) -> None:
@@ -455,20 +490,95 @@ def render_probability_view(results: pd.DataFrame) -> None:
     col3.metric("Semifinal", favorite["team"], f"{favorite['semifinal_pct']:.1f}%", help="Probabilidad de que el favorito alcance al menos las semifinales.")
     col4.metric("Rating modelo", f"{favorite['overall']:.1f}", "0-100 relativo", help="Rating compuesto del favorito en escala 0-100. Combina Elo, plantilla, forma y balance tactico segun los pesos configurados.")
 
-    sorted_top = top.sort_values("champion_pct")
-    fig = px.bar(
-        sorted_top,
-        x="champion_pct",
-        y="team",
-        color="confederation",
-        orientation="h",
-        text=sorted_top["champion_pct"].map(lambda value: f"{value:.1f}%"),
-        labels={"champion_pct": "Probabilidad de campeon", "team": "Seleccion"},
-        color_discrete_sequence=CHART_COLORS,
-    )
-    fig.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=10))
-    fig.update_traces(textposition="outside", cliponaxis=False)
-    st.plotly_chart(fig, width="stretch")
+    stage_cols = [
+        "round_of_32_pct",
+        "round_of_16_pct",
+        "quarterfinal_pct",
+        "semifinal_pct",
+        "final_pct",
+        "champion_pct",
+    ]
+    stage_labels = ["R32", "Octavos", "Cuartos", "Semis", "Final", "Campeon"]
+
+    tab_rank, tab_path, tab_heatmap = st.tabs(["Favoritos", "Ruta por ronda", "Mapa de avance"])
+
+    with tab_rank:
+        sorted_top = top.sort_values("champion_pct")
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=sorted_top["champion_pct"],
+                y=sorted_top["team"],
+                orientation="h",
+                marker={
+                    "color": sorted_top["champion_pct"],
+                    "colorscale": [[0, "#dbeafe"], [0.45, "#60a5fa"], [1, "#14532d"]],
+                    "line": {"color": "rgba(31, 41, 55, 0.22)", "width": 0.7},
+                },
+                text=sorted_top["champion_pct"].map(lambda value: f"{value:.1f}%"),
+                textposition="outside",
+                customdata=sorted_top[["confederation", "final_pct", "semifinal_pct", "overall"]],
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Confederacion: %{customdata[0]}<br>"
+                    "Campeon: %{x:.1f}%<br>"
+                    "Final: %{customdata[1]:.1f}%<br>"
+                    "Semifinal: %{customdata[2]:.1f}%<br>"
+                    "Rating: %{customdata[3]:.1f}<extra></extra>"
+                ),
+            )
+        )
+        fig.update_layout(title="Top 12 por probabilidad de campeon")
+        fig.update_xaxes(title="Probabilidad de campeon (%)", ticksuffix="%")
+        fig.update_yaxes(title="")
+        fig.update_traces(cliponaxis=False)
+        st.plotly_chart(apply_plotly_theme(fig, height=520, showlegend=False), width="stretch")
+
+    with tab_path:
+        route_top = results.head(8).copy()
+        fig = go.Figure()
+        palette = CHART_COLORS + px.colors.qualitative.Set2
+        for idx, row in route_top.reset_index(drop=True).iterrows():
+            values = [row[col] for col in stage_cols]
+            fig.add_trace(
+                go.Scatter(
+                    x=stage_labels,
+                    y=values,
+                    mode="lines+markers",
+                    name=row["team"],
+                    line={"width": 3, "color": palette[idx % len(palette)]},
+                    marker={"size": 8},
+                    hovertemplate=(
+                        f"<b>{row['team']}</b><br>"
+                        "%{x}: %{y:.1f}%<extra></extra>"
+                    ),
+                )
+            )
+        fig.update_layout(title="Probabilidad acumulada de avanzar por ronda", legend={"orientation": "h", "y": -0.22})
+        fig.update_yaxes(title="Probabilidad (%)", range=[0, 105], ticksuffix="%")
+        fig.update_xaxes(title="")
+        st.plotly_chart(apply_plotly_theme(fig, height=500), width="stretch")
+
+    with tab_heatmap:
+        heat = results.head(16).copy()
+        z_values = heat[stage_cols].round(1).to_numpy()
+        text_values = [[f"{value:.1f}%" for value in row] for row in z_values]
+        fig = go.Figure(
+            go.Heatmap(
+                z=z_values,
+                x=stage_labels,
+                y=heat["team"],
+                text=text_values,
+                texttemplate="%{text}",
+                colorscale=[[0, "#f8fafc"], [0.35, "#93c5fd"], [0.7, "#22c55e"], [1, "#14532d"]],
+                colorbar={"title": "%"},
+                hovertemplate="<b>%{y}</b><br>%{x}: %{z:.1f}%<extra></extra>",
+            )
+        )
+        fig.update_layout(title="Mapa de avance del top 16")
+        fig.update_xaxes(side="top")
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(apply_plotly_theme(fig, height=560, showlegend=False), width="stretch")
 
     st.download_button(
         "Exportar resultados CSV",
@@ -540,6 +650,72 @@ def render_group_view(df: pd.DataFrame, results: pd.DataFrame) -> None:
         hide_index=True,
     )
 
+    chart_col, radar_col = st.columns([1.2, 1])
+    with chart_col:
+        fig = go.Figure()
+        marker_sizes = (view["champion_pct"].fillna(0) + 4).clip(lower=8, upper=42)
+        fig.add_trace(
+            go.Scatter(
+                x=view["attack"],
+                y=view["defense"],
+                mode="markers+text",
+                text=view["team"],
+                textposition="top center",
+                marker={
+                    "size": marker_sizes,
+                    "color": view["round_of_32_pct"].fillna(0),
+                    "colorscale": [[0, "#e0f2fe"], [0.5, "#38bdf8"], [1, "#166534"]],
+                    "showscale": True,
+                    "colorbar": {"title": "R32 %"},
+                    "line": {"color": "#1f2937", "width": 0.7},
+                },
+                customdata=view[["overall", "champion_pct", "confederation"]],
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "Ataque: %{x:.1f}<br>"
+                    "Defensa: %{y:.1f}<br>"
+                    "Rating: %{customdata[0]:.1f}<br>"
+                    "Campeon: %{customdata[1]:.1f}%<br>"
+                    "%{customdata[2]}<extra></extra>"
+                ),
+            )
+        )
+        fig.update_layout(title=f"Perfil competitivo del Grupo {group}")
+        fig.update_xaxes(title="Ataque", range=[max(0, view["attack"].min() - 8), min(100, view["attack"].max() + 8)])
+        fig.update_yaxes(title="Defensa", range=[max(0, view["defense"].min() - 8), min(100, view["defense"].max() + 8)])
+        st.plotly_chart(apply_plotly_theme(fig, height=420, showlegend=False), width="stretch")
+
+    with radar_col:
+        radar_metrics = ["attack", "defense", "squad", "form", "overall"]
+        radar_labels = ["Ataque", "Defensa", "Plantilla", "Forma", "Rating"]
+        fig = go.Figure()
+        for idx, row in view.reset_index(drop=True).iterrows():
+            values = [row[col] for col in radar_metrics]
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=values + [values[0]],
+                    theta=radar_labels + [radar_labels[0]],
+                    fill="toself",
+                    name=row["team"],
+                    opacity=0.68,
+                    line={"color": (CHART_COLORS + px.colors.qualitative.Set2)[idx % (len(CHART_COLORS) + len(px.colors.qualitative.Set2))]},
+                    hovertemplate=f"<b>{row['team']}</b><br>%{{theta}}: %{{r:.1f}}<extra></extra>",
+                )
+            )
+        fig.update_layout(
+            title="Radar de ratings",
+            polar={
+                "radialaxis": {
+                    "visible": True,
+                    "range": [0, 100],
+                    "gridcolor": "rgba(148, 163, 184, 0.28)",
+                },
+                "bgcolor": "rgba(0,0,0,0)",
+            },
+            legend={"orientation": "h", "y": -0.18},
+        )
+        st.plotly_chart(apply_plotly_theme(fig, height=420), width="stretch")
+
     teams = view["team"].tolist()
     col1, col2 = st.columns(2)
     team_a = col1.selectbox("Equipo A", teams, index=0, help="Primera seleccion del duelo directo simulado.")
@@ -552,6 +728,26 @@ def render_group_view(df: pd.DataFrame, results: pd.DataFrame) -> None:
         c2.metric("Empate", f"{matchup['draw_pct']:.1f}%", help="Probabilidad de empate al final del tiempo reglamentario.")
         c3.metric(f"Gana {team_b}", f"{matchup['team_b_win_pct']:.1f}%", help=f"Probabilidad de victoria de {team_b} en 6000 simulaciones del partido.")
         c4.metric("xG", f"{matchup['team_a_xg']:.2f} - {matchup['team_b_xg']:.2f}", help="Goles esperados promedio (xG) para cada equipo segun sus ratings de ataque y defensa.")
+        matchup_fig = go.Figure(
+            go.Bar(
+                x=[matchup["team_a_win_pct"], matchup["draw_pct"], matchup["team_b_win_pct"]],
+                y=[f"Gana {team_a}", "Empate", f"Gana {team_b}"],
+                orientation="h",
+                marker={"color": ["#166534", "#94a3b8", "#1d4ed8"]},
+                text=[
+                    f"{matchup['team_a_win_pct']:.1f}%",
+                    f"{matchup['draw_pct']:.1f}%",
+                    f"{matchup['team_b_win_pct']:.1f}%",
+                ],
+                textposition="outside",
+                hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
+            )
+        )
+        matchup_fig.update_layout(title=f"Distribucion del duelo: {team_a} vs {team_b}")
+        matchup_fig.update_xaxes(title="Probabilidad (%)", range=[0, 100], ticksuffix="%")
+        matchup_fig.update_yaxes(title="")
+        matchup_fig.update_traces(cliponaxis=False)
+        st.plotly_chart(apply_plotly_theme(matchup_fig, height=300, showlegend=False), width="stretch")
 
 
 def render_model_view() -> None:
@@ -1932,17 +2128,60 @@ def render_evaluation_view() -> None:
             )
 
             st.markdown("#### Comparacion de Scores Finales")
-            fig = px.bar(
-                scores_df,
-                x="Submission",
-                y="Score Final",
-                title="Score Final por Submission (Brier Score Ponderado)",
-                labels={"Score Final": "Score Final", "Submission": "Submission"},
-                color="Score Final",
-                color_continuous_scale="RdYlGn_r",
+            plot_scores = scores_df.sort_values("Score Final", ascending=False).tail(15)
+            breakdown = scores_df.sort_values("Score Final").head(10)
+            fig = make_subplots(
+                rows=1,
+                cols=2,
+                subplot_titles=("Ranking final (menor es mejor)", "Desglose por etapa del top 10"),
+                column_widths=[0.45, 0.55],
             )
-            fig.update_layout(height=400, showlegend=False)
-            st.plotly_chart(fig, width="stretch")
+            fig.add_trace(
+                go.Bar(
+                    x=plot_scores["Score Final"],
+                    y=plot_scores["Submission"],
+                    orientation="h",
+                    marker={
+                        "color": plot_scores["Score Final"],
+                        "colorscale": [[0, "#166534"], [0.55, "#facc15"], [1, "#b91c1c"]],
+                        "line": {"color": "rgba(31,41,55,0.25)", "width": 0.7},
+                    },
+                    text=plot_scores["Score Final"].map(lambda value: f"{value:.5f}"),
+                    textposition="outside",
+                    hovertemplate="<b>%{y}</b><br>Score final: %{x:.6f}<extra></extra>",
+                    showlegend=False,
+                ),
+                row=1,
+                col=1,
+            )
+            stage_colors = {
+                "Champion": "#14532d",
+                "Final": "#2563eb",
+                "Semifinal": "#f59e0b",
+            }
+            for stage in ["Champion", "Final", "Semifinal"]:
+                fig.add_trace(
+                    go.Bar(
+                        x=breakdown["Submission"],
+                        y=breakdown[stage],
+                        name=stage,
+                        marker={"color": stage_colors[stage]},
+                        hovertemplate=f"<b>%{{x}}</b><br>{stage}: %{{y:.6f}}<extra></extra>",
+                    ),
+                    row=1,
+                    col=2,
+                )
+            fig.update_layout(
+                title="Calibracion de submissions",
+                barmode="group",
+                legend={"orientation": "h", "y": -0.22},
+            )
+            fig.update_xaxes(title="Score final", row=1, col=1)
+            fig.update_yaxes(title="", row=1, col=1)
+            fig.update_xaxes(title="", tickangle=-35, row=1, col=2)
+            fig.update_yaxes(title="Brier Score", row=1, col=2)
+            fig.update_traces(cliponaxis=False)
+            st.plotly_chart(apply_plotly_theme(fig, height=520), width="stretch")
         else:
             st.info("No hay submissions validas para mostrar scores.")
     else:
