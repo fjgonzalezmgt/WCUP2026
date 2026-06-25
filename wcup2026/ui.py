@@ -794,9 +794,10 @@ def render_data_editor(default_df: pd.DataFrame, model: str) -> pd.DataFrame:
 def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"):
     """Construir la figura Plotly del cuadro de eliminacion como arbol vertical.
 
-    Distribuye cada partido en columnas (octavos/cuartos/semis/final) y filas
-    fijas, dibuja conexiones entre rondas y resalta al ganador con color
-    turquesa.  Si el bracket esta vacio, los partidos se renderizan como TBD.
+    Distribuye cada partido en columnas y filas fijas, dibuja conexiones
+    entre rondas, resalta al ganador y agrega marcadores invisibles para
+    tooltips Plotly.  Si el bracket esta vacio, los partidos se renderizan
+    como TBD.
 
     Parameters
     ----------
@@ -804,8 +805,9 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
         DataFrame con columnas ``round``, ``match_id``, ``team_a``,
         ``team_b``, ``winner`` y opcionalmente ``winner_pct``.
     from_round : str, optional
-        ``"round_of_16"`` para mostrar desde octavos (configuracion
-        completa) o ``"quarterfinal"`` para mostrar solo desde cuartos.
+        ``"round_of_32"`` para mostrar todo el cuadro, ``"round_of_16"``
+        para mostrar desde octavos o ``"quarterfinal"`` para mostrar solo
+        desde cuartos.
         Por defecto ``"round_of_16"``.
 
     Returns
@@ -815,7 +817,41 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
     """
     import plotly.graph_objects as go
 
-    if from_round == "quarterfinal":
+    round_labels = {
+        "round_of_32": "Ronda de 32",
+        "round_of_16": "Octavos",
+        "quarterfinal": "Cuartos",
+        "semifinal": "Semifinal",
+        "final": "Final",
+    }
+
+    if from_round == "round_of_32":
+        r32_order = [74, 77, 73, 75, 83, 84, 81, 82, 76, 78, 79, 80, 86, 88, 85, 87]
+        positions = {match_id: (0, 30.0 - idx * 2.0) for idx, match_id in enumerate(r32_order)}
+        positions.update({
+            89: (1, 29.0), 90: (1, 25.0),
+            93: (1, 21.0), 94: (1, 17.0),
+            91: (1, 13.0), 92: (1, 9.0),
+            95: (1, 5.0), 96: (1, 1.0),
+            97: (2, 27.0), 98: (2, 19.0),
+            99: (2, 11.0), 100: (2, 3.0),
+            101: (3, 23.0), 102: (3, 7.0),
+            104: (4, 15.0),
+        })
+        col_x = {0: 0.0, 1: 3.6, 2: 7.2, 3: 10.8, 4: 14.4}
+        col_labels = {
+            0: "Ronda de 32",
+            1: "Octavos",
+            2: "Cuartos",
+            3: "Semifinales",
+            4: "Final",
+        }
+        box_hh = 0.42
+        y_range = [-1.7, 32.2]
+        x_range = [-1.7, 16.2]
+        fig_height = 920
+        font_size = 8
+    elif from_round == "quarterfinal":
         positions = {
             97: (0, 9.0), 98: (0, 6.0),
             99: (0, 3.0), 100: (0, 0.0),
@@ -849,16 +885,49 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
         font_size = 9
 
     parents = {
+        89: (74, 77), 90: (73, 75),
+        91: (76, 78), 92: (79, 80),
+        93: (83, 84), 94: (81, 82),
+        95: (86, 88), 96: (85, 87),
         97: (89, 90), 98: (93, 94),
         99: (91, 92), 100: (95, 96),
         101: (97, 98), 102: (99, 100),
         104: (101, 102),
     }
-    box_hw = 1.4
+    box_hw = 1.45
     match_dict = bracket.set_index("match_id").to_dict("index") if not bracket.empty else {}
 
     shapes = []
     annotations = []
+    hover_x: list[float] = []
+    hover_y: list[float] = []
+    hover_text: list[str] = []
+
+    def clean_value(value) -> str:
+        """Normalizar valores vacios de pandas para etiquetas."""
+        if value is None:
+            return ""
+        text = str(value)
+        return "" if text in ("None", "nan", "NaN") else text
+
+    def compact_label(text: str, max_chars: int) -> str:
+        """Acortar etiquetas largas sin perder legibilidad dentro de cajas."""
+        text = clean_value(text)
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 1].rstrip() + "…"
+
+    def match_round(match_id: int) -> str:
+        """Inferir nombre de ronda a partir del ID de partido."""
+        if 73 <= match_id <= 88:
+            return "round_of_32"
+        if 89 <= match_id <= 96:
+            return "round_of_16"
+        if 97 <= match_id <= 100:
+            return "quarterfinal"
+        if 101 <= match_id <= 102:
+            return "semifinal"
+        return "final"
 
     for child_id, (p1_id, p2_id) in parents.items():
         if child_id not in positions or p1_id not in positions or p2_id not in positions:
@@ -869,21 +938,27 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
         px_right = col_x[p1_col] + box_hw
         cx_left = col_x[child_col] - box_hw
         conn_x = (px_right + cx_left) / 2
+        child_row = match_dict.get(child_id, {})
+        child_teams = {clean_value(child_row.get("team_a")), clean_value(child_row.get("team_b"))}
         for py in (p1_y, p2_y):
+            parent_id = p1_id if py == p1_y else p2_id
+            parent_winner = clean_value(match_dict.get(parent_id, {}).get("winner"))
+            line_color = "#4ecca3" if parent_winner and parent_winner in child_teams else "#4b5563"
+            line_width = 2.4 if line_color == "#4ecca3" else 1.2
             shapes.append({"type": "line", "x0": px_right, "y0": py, "x1": conn_x, "y1": py,
-                           "line": {"color": "#555", "width": 1.5}})
+                           "line": {"color": line_color, "width": line_width}})
         shapes.append({"type": "line", "x0": conn_x, "y0": p1_y, "x1": conn_x, "y1": p2_y,
-                       "line": {"color": "#555", "width": 1.5}})
+                       "line": {"color": "#4b5563", "width": 1.2}})
         shapes.append({"type": "line", "x0": conn_x, "y0": child_y, "x1": cx_left, "y1": child_y,
-                       "line": {"color": "#555", "width": 1.5}})
+                       "line": {"color": "#4b5563", "width": 1.2}})
 
     for match_id, (col, y) in positions.items():
         cx = col_x[col]
         if match_id in match_dict:
             row = match_dict[match_id]
-            team_a = str(row["team_a"])
-            team_b = str(row["team_b"])
-            winner = str(row["winner"])
+            team_a = clean_value(row["team_a"])
+            team_b = clean_value(row["team_b"])
+            winner = clean_value(row["winner"])
             raw_pct = row.get("winner_pct")
             winner_pct = float(raw_pct) if raw_pct is not None and str(raw_pct) not in ("None", "nan", "") else None
         else:
@@ -893,20 +968,34 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
             (y, y + box_hh * 2, team_a),
             (y - box_hh * 2, y, team_b),
         ]:
-            fill = "#1a4d3f" if team == winner else "#1e2130"
+            is_winner = team == winner and team not in ("", "TBD")
+            fill = "#14532d" if is_winner else "#1f2937"
+            border = "#4ade80" if is_winner else "#475569"
             shapes.append({"type": "rect",
                            "x0": cx - box_hw, "y0": slot_y0,
                            "x1": cx + box_hw, "y1": slot_y1,
                            "fillcolor": fill,
-                           "line": {"color": "#444", "width": 0.8}})
-            color = "#4ecca3" if team == winner else "#cccccc"
-            label = team
-            if team == winner and winner_pct is not None:
-                label = f"{team} ({winner_pct:.0f}%)"
+                           "line": {"color": border, "width": 1.3 if is_winner else 0.8}})
+            color = "#bbf7d0" if is_winner else "#e5e7eb"
+            label = compact_label(team, 18 if from_round == "round_of_32" else 22)
+            if is_winner and winner_pct is not None:
+                label = compact_label(f"{team} ({winner_pct:.0f}%)", 18 if from_round == "round_of_32" else 22)
+            slot_mid = (slot_y0 + slot_y1) / 2
             annotations.append({"x": cx, "y": (slot_y0 + slot_y1) / 2,
                                  "text": label, "showarrow": False,
                                  "font": {"color": color, "size": font_size},
                                  "xanchor": "center", "yanchor": "middle"})
+            pct_text = f"<br>Frecuencia ganador: {winner_pct:.1f}%" if is_winner and winner_pct is not None else ""
+            hover_x.append(cx)
+            hover_y.append(slot_mid)
+            hover_text.append(
+                "<b>"
+                + round_labels.get(match_round(match_id), match_round(match_id))
+                + f" · Partido {match_id}</b><br>"
+                + f"{team_a} vs {team_b}<br>"
+                + f"Ganador: {winner or 'TBD'}"
+                + pct_text
+            )
 
     label_y = y_range[1] - 0.4
     for col, label in col_labels.items():
@@ -915,7 +1004,32 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
                              "font": {"color": "#aaaaaa", "size": 11},
                              "xanchor": "center", "yanchor": "top"})
 
+    champion = clean_value(match_dict.get(104, {}).get("winner"))
+    if champion and 104 in positions:
+        final_x = col_x[positions[104][0]]
+        final_y = positions[104][1]
+        annotations.append({
+            "x": final_x,
+            "y": final_y - 1.25,
+            "text": f"<b>Campeon: {html.escape(champion)}</b>",
+            "showarrow": False,
+            "font": {"color": "#facc15", "size": 13},
+            "xanchor": "center",
+            "yanchor": "middle",
+        })
+
     fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=hover_x,
+            y=hover_y,
+            mode="markers",
+            marker={"size": 18, "color": "rgba(255,255,255,0.01)"},
+            hovertext=hover_text,
+            hoverinfo="text",
+            showlegend=False,
+        )
+    )
     fig.update_layout(
         shapes=shapes,
         annotations=annotations,
@@ -924,8 +1038,11 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
         xaxis={"visible": False, "range": x_range},
         yaxis={"visible": False, "range": y_range},
         height=fig_height,
-        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+        margin={"l": 10, "r": 10, "t": 28, "b": 10},
+        hoverlabel={"bgcolor": "#111827", "font": {"color": "#f9fafb", "size": 12}},
     )
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
     return fig
 
 
@@ -974,12 +1091,16 @@ def render_bracket_view(
     with col_round:
         start_round = st.radio(
             "Mostrar desde",
-            ["Octavos de Final", "Cuartos de Final"],
+            ["Ronda de 32", "Octavos de Final", "Cuartos de Final"],
             horizontal=True,
             key="bracket_start_round",
         )
 
-    from_round = "round_of_16" if start_round == "Octavos de Final" else "quarterfinal"
+    from_round = {
+        "Ronda de 32": "round_of_32",
+        "Octavos de Final": "round_of_16",
+        "Cuartos de Final": "quarterfinal",
+    }[start_round]
     if mode == probable_label:
         active = bracket_probable
         st.caption(
@@ -1188,13 +1309,17 @@ def render_post_group_knockout_view(
     with col_round:
         start_round = st.radio(
             "Mostrar post-grupos desde",
-            ["Octavos de Final", "Cuartos de Final"],
+            ["Ronda de 32", "Octavos de Final", "Cuartos de Final"],
             horizontal=True,
             key="post_group_bracket_start_round",
         )
 
     active = bracket_probable if mode == "Mas probable post-grupos" else bracket
-    from_round = "round_of_16" if start_round == "Octavos de Final" else "quarterfinal"
+    from_round = {
+        "Ronda de 32": "round_of_32",
+        "Octavos de Final": "round_of_16",
+        "Cuartos de Final": "quarterfinal",
+    }[start_round]
     if active is not None:
         fig = _build_bracket_figure(active, from_round)
         st.plotly_chart(fig, width="stretch")
