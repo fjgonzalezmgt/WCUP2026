@@ -384,6 +384,100 @@ def call_llm_ratings_update(model: str, teams: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(ratings_list)
 
 
+def call_llm_group_results_update(model: str, teams: pd.DataFrame) -> pd.DataFrame:
+    """Usar busqueda web para obtener la tabla actual/final de fase de grupos.
+
+    Devuelve una fila por equipo con grupo, posicion, puntos, goles a favor
+    y goles en contra. Si la fase de grupos aun no ha terminado, usa la tabla
+    oficial mas reciente disponible.
+    """
+    from openai import OpenAI
+
+    client = OpenAI()
+    clean = teams[["team", "group"]].copy()
+    clean["group"] = clean["group"].astype(str).str.upper().str.strip()
+    team_records = clean.sort_values(["group", "team"]).to_dict(orient="records")
+    schema_example = json.dumps(
+        {
+            "group_results": [
+                {
+                    "group": "A",
+                    "position": 1,
+                    "team": "Mexico",
+                    "points": 7,
+                    "gf": 5,
+                    "ga": 2,
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    prompt = (
+        f"Fecha de consulta: {date.today().isoformat()}.\n"
+        "Necesito actualizar la tabla de fase de grupos del Mundial FIFA 2026 "
+        "para alimentar un simulador de eliminatorias.\n\n"
+        "Equipos y grupos esperados, con nombres exactos que debes conservar:\n"
+        f"{json.dumps(team_records, ensure_ascii=False)}\n\n"
+        "Busca en la web standings/resultados oficiales o fuentes confiables "
+        "del Mundial 2026. Si la fase de grupos ya termino, devuelve la tabla final. "
+        "Si aun esta en curso, devuelve la tabla actual mas reciente disponible. "
+        "Ordena cada grupo por la posicion oficial publicada; si una fuente no da "
+        "desempates completos, usa puntos, diferencia de goles, goles a favor y, "
+        "solo al final, el orden de la fuente.\n\n"
+        "Devuelve SOLO un JSON valido con este esquema exacto, sin markdown ni texto extra:\n"
+        f"{schema_example}\n\n"
+        "Reglas estrictas:\n"
+        "- group_results debe tener 48 filas, una por cada equipo de la lista.\n"
+        "- group debe ser una letra A-L.\n"
+        "- position debe ser 1, 2, 3 o 4 dentro de cada grupo.\n"
+        "- team debe coincidir exactamente con uno de los nombres entregados.\n"
+        "- points, gf y ga deben ser enteros no negativos.\n"
+        "- No inventes equipos ni cambies nombres."
+    )
+
+    response = client.responses.create(
+        model=model,
+        tools=[
+            {
+                "type": "web_search",
+                "search_context_size": "high",
+                "user_location": {
+                    "type": "approximate",
+                    "country": "US",
+                    "timezone": "America/Guatemala",
+                },
+            }
+        ],
+        tool_choice="required",
+        include=["web_search_call.action.sources"],
+        instructions=(
+            "Eres un analista de resultados FIFA. Debes usar busqueda web antes de "
+            "responder. Prioriza FIFA.com y fuentes deportivas confiables. Devuelve "
+            "UNICAMENTE JSON valido con el esquema solicitado. No incluyas explicaciones, "
+            "citas, markdown ni texto adicional."
+        ),
+        input=prompt,
+    )
+
+    data = _extract_json(_extract_response_text(response))
+    rows = data.get("group_results", data) if isinstance(data, dict) else data
+    result = pd.DataFrame(rows)
+    expected_columns = ["group", "position", "team", "points", "gf", "ga"]
+    missing = set(expected_columns).difference(result.columns)
+    if missing:
+        raise ValueError(
+            "La respuesta de grupos no incluyo columnas requeridas: "
+            + ", ".join(sorted(missing))
+        )
+    result = result[expected_columns].copy()
+    for column in ["position", "points", "gf", "ga"]:
+        result[column] = pd.to_numeric(result[column], errors="coerce").fillna(0).astype(int)
+    result["group"] = result["group"].astype(str).str.upper().str.strip()
+    result["team"] = result["team"].astype(str).str.strip()
+    return result.sort_values(["group", "position"]).reset_index(drop=True)
+
+
 def call_llm_analysis(model: str, payload: dict[str, Any]) -> str:
     """Llamar a la API de OpenAI Responses y devolver el texto generado.
 

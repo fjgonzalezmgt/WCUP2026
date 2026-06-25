@@ -10,7 +10,7 @@
 ![Conda](https://img.shields.io/badge/Conda-environment-44A833?logo=anaconda&logoColor=white)
 ![License](https://img.shields.io/badge/License-CC%20BY%204.0-green)
 
-Aplicación de Streamlit para simular el Mundial 2026 combinando **simulación Monte Carlo**, **modelo de goles Poisson** y una capa de **inteligencia artificial** que actualiza ratings con búsqueda web, consulta noticias en tiempo real e interpreta los resultados del modelo con lenguaje natural.
+Aplicación de Streamlit para simular el Mundial 2026 combinando **simulación Monte Carlo**, **modelo de goles Poisson** y una capa de **inteligencia artificial** que actualiza ratings con búsqueda web, consulta resultados de grupos en tiempo real, revisa noticias e interpreta los resultados del modelo con lenguaje natural.
 
 ---
 
@@ -25,8 +25,11 @@ Este proyecto es solo para fines informativos, educativos y analíticos. Las pro
 | Módulo | Descripción |
 |---|---|
 | **Simulación Monte Carlo** | Corre el torneo completo N veces (configurable) al pulsar un botón. Acumula probabilidades por ronda sin bloquear la UI. |
+| **Alcance de simulación** | Permite elegir entre simular el torneo completo o fijar los resultados de fase de grupos y modelar solo las eliminatorias. |
+| **Llaves desde grupos reales** | Carga manualmente la tabla final de grupos (`posición`, puntos, GF, GC) o actualízala con OpenAI `web_search`; la app arma la ronda de 32 FIFA, asigna mejores terceros y estima probabilidades post-grupos. |
 | **Modelo de goles Poisson** | Convierte ratings de ataque/defensa en goles esperados partido a partido, incluyendo tiempos extra y penales. |
 | **Actualización de ratings con IA** | Un botón llama a la API de OpenAI con `web_search` para obtener Elo, ranking FIFA, ataque, defensa, plantilla y forma actualizados para los 48 equipos. Los valores se fusionan en el dataset base y se guardan en `data/teams_seed.csv`. |
+| **Actualización de grupos con IA** | En modo post-grupos, un botón llama a OpenAI con `web_search` para buscar standings/resultados recientes y llenar la tabla de grupos validando los 48 equipos esperados. |
 | **LLM — Búsqueda de noticias** | Llama a la API de OpenAI con `web_search` activo para obtener noticias recientes de lesiones, bajas, convocatorias y forma de los favoritos. Las noticias se inyectan directamente en el campo de análisis cualitativo. |
 | **LLM — Interpretación de resultados** | Envía el top-12 del modelo junto con los ratings y el escenario del usuario al LLM para obtener un análisis narrativo: favoritos, riesgos cualitativos y ajustes sugeridos con rangos numéricos accionables. |
 | **Ratings editables** | Elo aproximado, ataque, defensa, plantilla y forma ajustables directamente en la tabla interactiva de la UI. |
@@ -44,16 +47,23 @@ flowchart LR
     A([Inicio]) --> B["① Actualizar ratings\ncon IA (opcional)"]
     B --> C["② Editar ratings\nmanualmente (opcional)"]
     C --> D["③ Configurar parámetros\nen la barra lateral"]
-    D --> E["④ Pulsar\n'Simular torneo'"]
-    E --> F["⑤ Explorar pestañas\nPredicción · Bracket · Grupos · Modelo · LLM · Reporte"]
-    F --> G["⑥ Buscar noticias y\ngenerar análisis LLM (opcional)"]
-    G --> H["⑦ Evaluar submissions\ny generar Excel (opcional)"]
-    H --> I([Resultados])
+    D --> S{"④ Alcance de\nsimulación"}
+    S --> E1["Torneo completo\nfase de grupos + llaves"]
+    S --> E2["Desde resultados\nde grupos"]
+    E1 --> F1["Pulsar\n'Simular torneo completo'"]
+    E2 --> G1["Cargar tabla de grupos\no actualizar con web_search"]
+    G1 --> G2["Pulsar\n'Modelar llaves con estos grupos'"]
+    F1 --> H["Explorar pestañas\nPredicción · Bracket · Grupos · Modelo · LLM · Reporte"]
+    G2 --> H
+    H --> I["Buscar noticias y\ngenerar análisis LLM (opcional)"]
+    I --> J["Evaluar submissions\ny generar Excel (opcional)"]
+    J --> K([Resultados])
 
     style B fill:#412991,color:#fff
-    style E fill:#e03030,color:#fff
-    style G fill:#412991,color:#fff
-    style H fill:#0b8043,color:#fff
+    style F1 fill:#e03030,color:#fff
+    style G2 fill:#e03030,color:#fff
+    style I fill:#412991,color:#fff
+    style J fill:#0b8043,color:#fff
 ```
 
 ---
@@ -67,6 +77,12 @@ flowchart TD
     RA --> RB["OpenAI Responses API\n+ web_search (alta cobertura)"]
     RB --> RC["Elo · Ranking FIFA · Ataque\nDefensa · Plantilla · Forma"]
     RC --> RD["apply_ratings_update()\n→ teams_seed.csv actualizado"]
+
+    U --> GR["Pulsa 'Actualizar grupos\ncon búsqueda web'"]
+    GR --> GRA["call_llm_group_results_update()"]
+    GRA --> GRB["OpenAI Responses API\n+ web_search (alta cobertura)"]
+    GRB --> GRC["Tabla de grupos\nposición · puntos · GF · GC"]
+    GRC --> GRD["Validación de 48 equipos\n→ editor post-grupos"]
 
     U --> A["Pulsa 'Buscar noticias'"]
     A --> B["call_llm_news_search()"]
@@ -90,11 +106,35 @@ flowchart TD
 
     style C fill:#412991,color:#fff
     style RB fill:#412991,color:#fff
+    style GRB fill:#412991,color:#fff
     style I fill:#412991,color:#fff
     style payload fill:#f0f4ff,stroke:#412991
 ```
 
-La novedad frente a modelos clásicos es que **el LLM no solo interpreta salidas estadísticas**, sino que también **recupera y actualiza datos reales** (ratings, noticias, convocatorias y sanciones) usando `web_search` de la Responses API, unificando información cuantitativa y cualitativa en un solo flujo.
+La novedad frente a modelos clásicos es que **el LLM no solo interpreta salidas estadísticas**, sino que también **recupera y actualiza datos reales** (ratings, standings de grupos, noticias, convocatorias y sanciones) usando `web_search` de la Responses API, unificando información cuantitativa y cualitativa en un solo flujo.
+
+---
+
+## Modos de simulación
+
+La app tiene un selector **Alcance de simulación** con dos caminos:
+
+| Modo | Qué hace | Cuándo usarlo |
+|---|---|---|
+| **Torneo completo** | Simula fase de grupos, mejores terceros, ronda de 32 y todas las eliminatorias en cada iteración Monte Carlo. | Antes o durante el torneo, cuando quieres un pronóstico integral desde cero. |
+| **Desde resultados de grupos** | Fija la tabla de cada grupo, asigna clasificados y mejores terceros, y simula solo las llaves. | Cuando ya tienes resultados reales/parciales de fase de grupos o quieres evaluar escenarios específicos de clasificación. |
+
+En **Desde resultados de grupos**, la tabla editable requiere:
+
+```csv
+group,position,team,points,gf,ga
+A,1,Mexico,7,5,2
+A,2,Korea Republic,5,4,3
+A,3,Czechia,4,3,3
+A,4,South Africa,0,1,5
+```
+
+El botón **Actualizar grupos con búsqueda web** usa OpenAI `web_search` para buscar la tabla actual/final, normaliza nombres de equipos, valida que existan los 48 participantes y reemplaza el editor. Si la fase de grupos todavía no ha terminado, usa la tabla más reciente disponible; si ya terminó, usa la tabla final.
 
 ---
 
@@ -184,6 +224,7 @@ graph TD
     data --> cfg
     data --> csv
     llm --> csv
+    llm --> standings["Tabla de grupos\nweb_search → editor"]
     ui --> rep
     evalpy --> evalcsv
 
@@ -191,6 +232,7 @@ graph TD
     style sim fill:#1a73e8,color:#fff
     style llm fill:#412991,color:#fff
     style csv fill:#0b8043,color:#fff
+    style standings fill:#0b8043,color:#fff
     style xlsx fill:#0b8043,color:#fff
 ```
 
@@ -227,6 +269,32 @@ flowchart TD
 
     style START fill:#e03030,color:#fff
     style PROBA fill:#1a73e8,color:#fff
+    style VIZ fill:#0b8043,color:#fff
+```
+
+---
+
+## Flujo post-grupos
+
+```mermaid
+flowchart TD
+    START(["Modo\nDesde resultados de grupos"]) --> INPUT["Tabla editable\nA-L · posición · puntos · GF · GC"]
+    INPUT --> WEB{{"¿Actualizar con\nOpenAI web_search?"}}
+    WEB -- Sí --> SEARCH["call_llm_group_results_update()\nbusca standings/resultados"]
+    SEARCH --> VALID["Validar 48 equipos\nsin duplicados ni grupos cruzados"]
+    WEB -- No --> VALID
+    VALID --> SLOTS["Fijar 1° y 2°\nde cada grupo"]
+    VALID --> THIRD["Rankear 12 terceros\npor puntos · DG · GF · rating"]
+    THIRD --> BEST["Elegir mejores 8 terceros\ny asignarlos a ventanas FIFA"]
+    SLOTS --> R32["Construir ronda de 32"]
+    BEST --> R32
+    R32 --> KO["Simular eliminatorias\nN veces"]
+    KO --> OUT["Probabilidades post-grupos\nBracket más probable"]
+    OUT --> VIZ["Visualizar en\nPredicción · Bracket · LLM · Reporte"]
+
+    style START fill:#e03030,color:#fff
+    style SEARCH fill:#412991,color:#fff
+    style OUT fill:#1a73e8,color:#fff
     style VIZ fill:#0b8043,color:#fff
 ```
 
@@ -353,6 +421,7 @@ streamlit run app.py
 - Clasifican los **dos primeros de cada grupo** más los **ocho mejores terceros**.
 - **Ronda de 32** construida siguiendo el calendario oficial FIFA.
 - Probabilidades calculadas por ronda: Fase de grupos → Ronda de 32 → Octavos → Cuartos → Semifinal → Final → Campeón.
+- En modo **Desde resultados de grupos**, la fase de grupos se trata como observada/fija y las probabilidades se recalculan solo para Ronda de 32 → Octavos → Cuartos → Semifinal → Final → Campeón.
 
 ---
 
@@ -386,8 +455,8 @@ WCUP2026/
     ├── parameters.py       # Parámetros del simulador (N simulaciones, etc.)
     ├── data.py             # Lectura, validación, preparación y fusión de ratings
     ├── bracket.py          # Estructura de ronda de 32 y eliminatorias
-    ├── simulator.py        # Poisson, grupos, eliminatorias y Monte Carlo
-    ├── llm.py              # Actualización de ratings, noticias e interpretación con OpenAI
+    ├── simulator.py        # Poisson, grupos, eliminatorias, post-grupos y Monte Carlo
+    ├── llm.py              # Actualización de ratings, grupos, noticias e interpretación con OpenAI
     ├── persistence.py      # Persistencia de resultados y estado recuperable
     ├── report.py           # Reporte LaTeX/PDF de simulación
     └── ui.py               # Componentes visuales y flujo de Streamlit

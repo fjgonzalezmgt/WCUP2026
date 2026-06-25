@@ -27,6 +27,7 @@ from wcup2026.config import (
     DATA_PATH,
     FIFA_GROUPS_URL,
     FIFA_SCHEDULE_URL,
+    GROUPS,
     OPENAI_RESPONSES_URL,
 )
 from wcup2026.data import (
@@ -40,6 +41,7 @@ from wcup2026.llm import (
     api_key_available,
     build_analysis_payload,
     call_llm_analysis,
+    call_llm_group_results_update,
     call_llm_news_search,
     call_llm_ratings_update,
     default_model,
@@ -54,7 +56,15 @@ from wcup2026.persistence import (
     save_montecarlo_results,
 )
 import wcup2026.report as report_module
-from wcup2026.simulator import describe_matchup, simulate_bracket_most_probable, simulate_bracket_sample, simulate_many
+from wcup2026.simulator import (
+    describe_matchup,
+    simulate_bracket_from_group_results,
+    simulate_bracket_most_probable,
+    simulate_bracket_most_probable_from_group_results,
+    simulate_bracket_sample,
+    simulate_knockout_projection_from_group_results,
+    simulate_many,
+)
 
 
 def configure_page() -> None:
@@ -225,6 +235,50 @@ def run_bracket_probable_cached(csv_text: str, params: SimParams) -> pd.DataFram
     df = dataframe_from_csv_text(csv_text)
     validate_team_data(df)
     return simulate_bracket_most_probable(df, params, n=1000)
+
+
+@st.cache_data(show_spinner=False)
+def run_post_group_bracket_cached(
+    csv_text: str,
+    group_results_csv_text: str,
+    params: SimParams,
+) -> pd.DataFrame:
+    """Generar una llave representativa desde resultados finales de grupos."""
+    df = dataframe_from_csv_text(csv_text)
+    group_results = dataframe_from_csv_text(group_results_csv_text)
+    validate_team_data(df)
+    return simulate_bracket_from_group_results(df, group_results, params)
+
+
+@st.cache_data(show_spinner=False)
+def run_post_group_bracket_probable_cached(
+    csv_text: str,
+    group_results_csv_text: str,
+    params: SimParams,
+) -> pd.DataFrame:
+    """Generar la llave mas probable desde resultados finales de grupos."""
+    df = dataframe_from_csv_text(csv_text)
+    group_results = dataframe_from_csv_text(group_results_csv_text)
+    validate_team_data(df)
+    return simulate_bracket_most_probable_from_group_results(
+        df,
+        group_results,
+        params,
+        n=1000,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def run_post_group_projection_cached(
+    csv_text: str,
+    group_results_csv_text: str,
+    params: SimParams,
+) -> pd.DataFrame:
+    """Estimar probabilidades de eliminatorias desde grupos ya definidos."""
+    df = dataframe_from_csv_text(csv_text)
+    group_results = dataframe_from_csv_text(group_results_csv_text)
+    validate_team_data(df)
+    return simulate_knockout_projection_from_group_results(df, group_results, params)
 
 
 @st.cache_data(show_spinner="Simulando torneos...")
@@ -539,7 +593,12 @@ def render_model_view() -> None:
     )
 
 
-def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None:
+def render_llm_view(
+    results: pd.DataFrame,
+    df: pd.DataFrame,
+    model: str,
+    bracket_probable: pd.DataFrame | None = None,
+) -> None:
     """Renderizar la pestana de integracion LLM.
 
     Muestra ideas de uso del LLM, un area de texto para ingresar
@@ -582,7 +641,11 @@ def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None
         else:
             payload = build_analysis_payload(
                 results, df, notes,
-                bracket_probable=st.session_state.get("bracket_probable"),
+                bracket_probable=(
+                    bracket_probable
+                    if bracket_probable is not None
+                    else st.session_state.get("bracket_probable")
+                ),
             )
             try:
                 with st.spinner("Consultando al LLM..."):
@@ -600,7 +663,11 @@ def render_llm_view(results: pd.DataFrame, df: pd.DataFrame, model: str) -> None
             st.warning("El LLM respondio sin texto visible. Revisa el modelo configurado o intenta de nuevo.")
 
 
-def render_report_view(results: pd.DataFrame | None, df: pd.DataFrame) -> None:
+def render_report_view(
+    results: pd.DataFrame | None,
+    df: pd.DataFrame,
+    bracket_probable: pd.DataFrame | None = None,
+) -> None:
     """Renderizar la pestana de generacion del reporte LaTeX/PDF.
 
     Muestra un boton para generar el archivo TEX y compilar el PDF.  Si
@@ -635,7 +702,11 @@ def render_report_view(results: pd.DataFrame | None, df: pd.DataFrame) -> None:
                     teams=df,
                     llm_text=st.session_state.get("llm_answer"),
                     params=st.session_state.get("params"),
-                    bracket_probable=st.session_state.get("bracket_probable"),
+                    bracket_probable=(
+                        bracket_probable
+                        if bracket_probable is not None
+                        else st.session_state.get("bracket_probable")
+                    ),
                     compile_pdf=True,
                 )
             st.success(f"Reporte generado: {tex_path.name}")
@@ -861,6 +932,12 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
 def render_bracket_view(
     bracket: pd.DataFrame | None,
     bracket_probable: pd.DataFrame | None,
+    *,
+    empty_message: str | None = None,
+    probable_label: str = "Mas probable (1000 sim.)",
+    sample_label: str = "Una simulacion",
+    probable_caption: str | None = None,
+    sample_caption: str | None = None,
 ) -> None:
     """Renderizar el cuadro de eliminacion del torneo como grafico tipo arbol.
 
@@ -880,7 +957,8 @@ def render_bracket_view(
     any_data = bracket is not None or bracket_probable is not None
     if not any_data:
         st.info(
-            "Pulsa **Simular torneo** para generar el cuadro de eliminacion. "
+            empty_message
+            or "Pulsa **Simular torneo** para generar el cuadro de eliminacion. "
             "Los resultados se guardaran en el XLSX para la proxima sesion."
         )
         return
@@ -889,9 +967,9 @@ def render_bracket_view(
     with col_mode:
         mode_options = []
         if bracket_probable is not None:
-            mode_options.append("Mas probable (1000 sim.)")
+            mode_options.append(probable_label)
         if bracket is not None:
-            mode_options.append("Una simulacion")
+            mode_options.append(sample_label)
         mode = st.radio("Modo", mode_options, horizontal=True, key="bracket_mode")
     with col_round:
         start_round = st.radio(
@@ -902,15 +980,243 @@ def render_bracket_view(
         )
 
     from_round = "round_of_16" if start_round == "Octavos de Final" else "quarterfinal"
-    if mode == "Mas probable (1000 sim.)":
+    if mode == probable_label:
         active = bracket_probable
-        st.caption("Cuadro mas probable: para cada posicion se muestra el equipo que gano con mayor frecuencia en 1000 simulaciones. El porcentaje indica la frecuencia del ganador en esa posicion.")
+        st.caption(
+            probable_caption
+            or "Cuadro mas probable: para cada posicion se muestra el equipo que gano con mayor frecuencia en 1000 simulaciones. El porcentaje indica la frecuencia del ganador en esa posicion."
+        )
     else:
         active = bracket
-        st.caption("Simulacion representativa (semilla fija). El ganador de cada partido aparece en verde.")
+        st.caption(
+            sample_caption
+            or "Simulacion representativa (semilla fija). El ganador de cada partido aparece en verde."
+        )
 
     fig = _build_bracket_figure(active, from_round)
     st.plotly_chart(fig, width='stretch')
+
+
+def build_group_results_template(df: pd.DataFrame) -> pd.DataFrame:
+    """Crear plantilla editable para cargar resultados finales de grupos."""
+    clean = df.copy()
+    clean["group"] = clean["group"].astype(str).str.upper().str.strip()
+    rows = []
+    for group in GROUPS:
+        group_teams = clean.loc[clean["group"] == group, "team"].tolist()
+        for position, team in enumerate(group_teams, start=1):
+            rows.append({
+                "group": group,
+                "position": position,
+                "team": team,
+                "points": 0,
+                "gf": 0,
+                "ga": 0,
+            })
+    return pd.DataFrame(rows)
+
+
+def normalize_group_results_update(update: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+    """Validar y ordenar una tabla de grupos obtenida por busqueda web."""
+    required = ["group", "position", "team", "points", "gf", "ga"]
+    missing = set(required).difference(update.columns)
+    if missing:
+        raise ValueError(f"Faltan columnas: {', '.join(sorted(missing))}")
+
+    valid_pairs = (
+        df[["team", "group"]]
+        .assign(group=lambda data: data["group"].astype(str).str.upper().str.strip())
+        .set_index("team")["group"]
+        .to_dict()
+    )
+    clean = update[required].copy()
+    clean["team"] = clean["team"].astype(str).str.strip()
+    clean["group"] = clean["group"].astype(str).str.upper().str.strip()
+    for column in ["position", "points", "gf", "ga"]:
+        clean[column] = pd.to_numeric(clean[column], errors="coerce").fillna(0).astype(int)
+
+    unknown = sorted(set(clean["team"]) - set(valid_pairs))
+    if unknown:
+        raise ValueError(f"Equipos no reconocidos: {', '.join(unknown)}")
+    missing_teams = sorted(set(valid_pairs) - set(clean["team"]))
+    if missing_teams:
+        raise ValueError(f"Faltan equipos: {', '.join(missing_teams)}")
+    duplicated = clean.loc[clean["team"].duplicated(), "team"].tolist()
+    if duplicated:
+        raise ValueError(f"Equipos duplicados: {', '.join(duplicated)}")
+
+    mismatched = [
+        f"{row.team} ({row.group} vs {valid_pairs[row.team]})"
+        for row in clean.itertuples()
+        if valid_pairs[row.team] != row.group
+    ]
+    if mismatched:
+        raise ValueError("Grupos inconsistentes: " + ", ".join(mismatched))
+
+    invalid_positions = clean.loc[~clean["position"].between(1, 4)]
+    if not invalid_positions.empty:
+        raise ValueError("Todas las posiciones deben estar entre 1 y 4.")
+    duplicate_positions = clean.duplicated(subset=["group", "position"], keep=False)
+    if duplicate_positions.any():
+        bad = clean.loc[duplicate_positions, ["group", "position"]].drop_duplicates()
+        labels = [f"{row.group}-{row.position}" for row in bad.itertuples()]
+        raise ValueError(f"Posiciones duplicadas por grupo: {', '.join(labels)}")
+
+    return clean.sort_values(["group", "position"]).reset_index(drop=True)
+
+
+def render_post_group_knockout_view(
+    df: pd.DataFrame,
+    params: SimParams,
+    model: str,
+    *,
+    show_header: bool = True,
+    show_outputs: bool = True,
+) -> None:
+    """Renderizar modelado de eliminatorias condicionado a grupos reales."""
+    if show_header:
+        st.subheader("Llaves desde resultados de grupos")
+        st.markdown(
+            '<div class="small-note">Carga la tabla final de cada grupo. La app fija 1°, 2° y mejores 3° clasificados, arma la ronda de 32 FIFA y simula solo las eliminatorias.</div>',
+            unsafe_allow_html=True,
+        )
+
+    source_signature = dataframe_to_csv_text(
+        df[["team", "group"]].sort_values(["group", "team"]).reset_index(drop=True)
+    )
+    if (
+        "post_group_results_input" not in st.session_state
+        or st.session_state.get("_post_group_results_source") != source_signature
+    ):
+        st.session_state["post_group_results_input"] = build_group_results_template(df)
+        st.session_state["_post_group_results_source"] = source_signature
+
+    with st.expander("Cargar tabla final de fase de grupos", expanded=True):
+        st.markdown(
+            '<div class="small-note">Reordena equipos por posicion y completa puntos, goles a favor y goles en contra. Si dejas puntos/goles en cero, los mejores terceros se desempatan por rating del modelo.</div>',
+            unsafe_allow_html=True,
+        )
+        if api_key_available():
+            if st.button(
+                "Actualizar grupos con busqueda web",
+                help="Usa OpenAI web_search para buscar standings/resultados recientes de fase de grupos y llenar esta tabla.",
+            ):
+                try:
+                    with st.spinner("Buscando resultados de grupos con OpenAI web_search..."):
+                        update = call_llm_group_results_update(model, df)
+                        st.session_state["post_group_results_input"] = normalize_group_results_update(
+                            update,
+                            df,
+                        )
+                    st.success("Tabla de grupos actualizada con busqueda web.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"No se pudieron actualizar los grupos con busqueda web: {exc}")
+        else:
+            st.caption("OPENAI_API_KEY no detectada. Puedes cargar la tabla manualmente.")
+
+        group_results_input = st.data_editor(
+            st.session_state["post_group_results_input"],
+            width="stretch",
+            num_rows="fixed",
+            key="post_group_results_editor",
+            disabled=["group", "position"],
+            column_config={
+                "group": st.column_config.TextColumn("Grupo"),
+                "position": st.column_config.NumberColumn("Posicion", min_value=1, max_value=4),
+                "team": st.column_config.SelectboxColumn(
+                    "Equipo",
+                    options=sorted(df["team"].tolist()),
+                    required=True,
+                ),
+                "points": st.column_config.NumberColumn("Pts", min_value=0, max_value=9, step=1),
+                "gf": st.column_config.NumberColumn("GF", min_value=0, max_value=30, step=1),
+                "ga": st.column_config.NumberColumn("GC", min_value=0, max_value=30, step=1),
+            },
+        )
+        st.session_state["post_group_results_input"] = group_results_input.copy()
+
+    if st.button(
+        "Modelar llaves con estos grupos",
+        type="primary",
+        help="Simula eliminatorias usando los resultados cargados como condicion fija.",
+    ):
+        try:
+            csv_text = dataframe_to_csv_text(df)
+            group_csv_text = dataframe_to_csv_text(group_results_input)
+            with st.spinner("Simulando eliminatorias desde grupos cargados..."):
+                st.session_state["post_group_projection"] = run_post_group_projection_cached(
+                    csv_text,
+                    group_csv_text,
+                    params,
+                )
+                st.session_state["post_group_bracket"] = run_post_group_bracket_cached(
+                    csv_text,
+                    group_csv_text,
+                    params,
+                )
+                st.session_state["post_group_bracket_probable"] = run_post_group_bracket_probable_cached(
+                    csv_text,
+                    group_csv_text,
+                    params,
+                )
+            st.success("Llaves modeladas desde los resultados de grupos cargados.")
+        except Exception as exc:
+            st.error(f"No se pudieron modelar las llaves: {exc}")
+
+    projection = st.session_state.get("post_group_projection")
+    bracket = st.session_state.get("post_group_bracket")
+    bracket_probable = st.session_state.get("post_group_bracket_probable")
+    if projection is None or not show_outputs:
+        return
+
+    favorite = projection.iloc[0]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Favorito post-grupos", favorite["team"], f"{favorite['champion_pct']:.1f}% campeon")
+    c2.metric("Final", favorite["team"], f"{favorite['final_pct']:.1f}%")
+    c3.metric("Semifinal", favorite["team"], f"{favorite['semifinal_pct']:.1f}%")
+    c4.metric("Rating modelo", f"{favorite['overall']:.1f}", "0-100 relativo")
+
+    col_mode, col_round = st.columns([2, 2])
+    with col_mode:
+        mode_options = []
+        if bracket_probable is not None:
+            mode_options.append("Mas probable post-grupos")
+        if bracket is not None:
+            mode_options.append("Una simulacion post-grupos")
+        mode = st.radio("Modo post-grupos", mode_options, horizontal=True, key="post_group_bracket_mode")
+    with col_round:
+        start_round = st.radio(
+            "Mostrar post-grupos desde",
+            ["Octavos de Final", "Cuartos de Final"],
+            horizontal=True,
+            key="post_group_bracket_start_round",
+        )
+
+    active = bracket_probable if mode == "Mas probable post-grupos" else bracket
+    from_round = "round_of_16" if start_round == "Octavos de Final" else "quarterfinal"
+    if active is not None:
+        fig = _build_bracket_figure(active, from_round)
+        st.plotly_chart(fig, width="stretch")
+
+    qualifiers = projection.loc[projection["round_of_32_pct"] > 0].copy()
+    st.dataframe(
+        qualifiers[
+            [
+                "team",
+                "group",
+                "overall",
+                "round_of_32_pct",
+                "round_of_16_pct",
+                "quarterfinal_pct",
+                "semifinal_pct",
+                "final_pct",
+                "champion_pct",
+            ]
+        ].round(2),
+        width="stretch",
+        hide_index=True,
+    )
 
 
 def render_app() -> None:
@@ -936,61 +1242,106 @@ def render_app() -> None:
     default_df = load_default_data_cached()
     working_df = render_data_editor(default_df, llm_model)
 
-    if st.button("Simular torneo", type="primary", help="Ejecuta la simulacion Monte Carlo con los ratings y parametros actuales."):
-        try:
-            csv_text = dataframe_to_csv_text(working_df)
-            run_simulation_cached.clear()
-            run_bracket_sample_cached.clear()
-            run_bracket_probable_cached.clear()
-            with st.spinner("Simulando torneos..."):
-                st.session_state["simulation_results"] = run_simulation_cached(csv_text, params)
-            with st.spinner("Generando cuadro de eliminacion..."):
-                st.session_state["bracket"] = run_bracket_sample_cached(csv_text, params)
-            with st.spinner("Calculando cuadro mas probable (1000 simulaciones)..."):
-                st.session_state["bracket_probable"] = run_bracket_probable_cached(csv_text, params)
-            st.session_state["simulation_df"] = working_df.copy()
-            save_montecarlo_results(
-                st.session_state["simulation_results"],
-                st.session_state["simulation_df"],
-                params,
-                bracket=st.session_state["bracket"],
-                bracket_probable=st.session_state["bracket_probable"],
-            )
-        except Exception as exc:
-            st.error(f"No se pudo correr la simulacion: {exc}")
+    st.subheader("Alcance de simulacion")
+    simulation_scope = st.radio(
+        "Que quieres modelar?",
+        ["Torneo completo", "Desde resultados de grupos"],
+        horizontal=True,
+        key="simulation_scope",
+        help="Elige si quieres simular fase de grupos + eliminatorias, o fijar la tabla final de grupos y simular solo las llaves.",
+    )
+    post_group_mode = simulation_scope == "Desde resultados de grupos"
 
-    results = st.session_state.get("simulation_results")
-    sim_df = st.session_state.get("simulation_df", working_df)
+    if not post_group_mode:
+        if st.button("Simular torneo completo", type="primary", help="Ejecuta fase de grupos y eliminatorias con los ratings y parametros actuales."):
+            try:
+                csv_text = dataframe_to_csv_text(working_df)
+                run_simulation_cached.clear()
+                run_bracket_sample_cached.clear()
+                run_bracket_probable_cached.clear()
+                with st.spinner("Simulando torneos..."):
+                    st.session_state["simulation_results"] = run_simulation_cached(csv_text, params)
+                with st.spinner("Generando cuadro de eliminacion..."):
+                    st.session_state["bracket"] = run_bracket_sample_cached(csv_text, params)
+                with st.spinner("Calculando cuadro mas probable (1000 simulaciones)..."):
+                    st.session_state["bracket_probable"] = run_bracket_probable_cached(csv_text, params)
+                st.session_state["simulation_df"] = working_df.copy()
+                save_montecarlo_results(
+                    st.session_state["simulation_results"],
+                    st.session_state["simulation_df"],
+                    params,
+                    bracket=st.session_state["bracket"],
+                    bracket_probable=st.session_state["bracket_probable"],
+                )
+            except Exception as exc:
+                st.error(f"No se pudo correr la simulacion: {exc}")
+    else:
+        render_post_group_knockout_view(
+            working_df,
+            params,
+            llm_model,
+            show_header=False,
+            show_outputs=False,
+        )
 
-    bracket = st.session_state.get("bracket")
-    bracket_probable = st.session_state.get("bracket_probable")
+    if post_group_mode:
+        results = st.session_state.get("post_group_projection")
+        sim_df = working_df
+        bracket = st.session_state.get("post_group_bracket")
+        bracket_probable = st.session_state.get("post_group_bracket_probable")
+    else:
+        results = st.session_state.get("simulation_results")
+        sim_df = st.session_state.get("simulation_df", working_df)
+        bracket = st.session_state.get("bracket")
+        bracket_probable = st.session_state.get("bracket_probable")
 
     tab_pred, tab_bracket, tab_groups, tab_model, tab_llm, tab_eval, tab_report = st.tabs(
         ["Prediccion", "Bracket", "Grupos", "Modelo", "LLM", "Evaluar", "Reporte"]
     )
     with tab_pred:
         if results is None:
-            st.info("Pulsa **Simular torneo** para ver las predicciones.")
+            if post_group_mode:
+                st.info("Carga los resultados de grupos y pulsa **Modelar llaves con estos grupos** para ver las predicciones.")
+            else:
+                st.info("Pulsa **Simular torneo completo** para ver las predicciones.")
         else:
             render_probability_view(results)
     with tab_bracket:
-        render_bracket_view(bracket, bracket_probable)
+        if post_group_mode:
+            render_bracket_view(
+                bracket,
+                bracket_probable,
+                empty_message="Carga los resultados de grupos y pulsa **Modelar llaves con estos grupos** para generar el cuadro de eliminacion.",
+                probable_label="Mas probable post-grupos",
+                sample_label="Una simulacion post-grupos",
+                probable_caption="Cuadro mas probable condicionado a los resultados de grupos cargados.",
+                sample_caption="Simulacion representativa condicionada a los resultados de grupos cargados.",
+            )
+        else:
+            render_bracket_view(bracket, bracket_probable)
     with tab_groups:
-        if results is None:
-            st.info("Pulsa **Simular torneo** para ver el analisis por grupos.")
+        if post_group_mode:
+            st.info("En este modo la fase de grupos ya esta fijada por la tabla que cargaste arriba.")
+            st.dataframe(
+                st.session_state.get("post_group_results_input", pd.DataFrame()),
+                width="stretch",
+                hide_index=True,
+            )
+        elif results is None:
+            st.info("Pulsa **Simular torneo completo** para ver el analisis por grupos.")
         else:
             render_group_view(sim_df, results)
     with tab_model:
         render_model_view()
     with tab_llm:
         if results is None:
-            render_llm_view(None, sim_df, llm_model)
+            render_llm_view(None, sim_df, llm_model, bracket_probable)
         else:
-            render_llm_view(results, sim_df, llm_model)
+            render_llm_view(results, sim_df, llm_model, bracket_probable)
     with tab_eval:
         render_evaluation_view()
     with tab_report:
-        render_report_view(results, sim_df)
+        render_report_view(results, sim_df, bracket_probable)
 
 
 def render_evaluation_view() -> None:

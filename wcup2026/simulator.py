@@ -726,6 +726,313 @@ def simulate_bracket_sample(df: pd.DataFrame, params: SimParams) -> pd.DataFrame
     return pd.DataFrame(rows)
 
 
+def _prepare_group_results_context(
+    df: pd.DataFrame,
+    group_results: pd.DataFrame,
+    params: SimParams,
+) -> tuple[pd.DataFrame, dict[str, dict[str, Any]], dict[str, str], dict[int, str], list[dict[str, Any]]]:
+    """Preparar slots de eliminatoria desde resultados finales de grupos.
+
+    ``group_results`` debe incluir al menos ``group``, ``position`` y
+    ``team``. Las columnas ``points``, ``gf`` y ``ga`` son opcionales, pero
+    se usan para ordenar los mejores terceros cuando estan disponibles.
+    """
+    required = {"group", "position", "team"}
+    missing = required.difference(group_results.columns)
+    if missing:
+        raise ValueError(f"Faltan columnas en resultados de grupos: {', '.join(sorted(missing))}")
+
+    clean = df.copy()
+    clean["group"] = clean["group"].astype(str).str.upper().str.strip()
+    teams = prepare_teams(clean, params)
+    base_group_by_team = clean.set_index("team")["group"].to_dict()
+
+    results = group_results.copy()
+    results["group"] = results["group"].astype(str).str.upper().str.strip()
+    results["team"] = results["team"].astype(str).str.strip()
+    results["position"] = pd.to_numeric(results["position"], errors="coerce")
+    results = results.dropna(subset=["group", "team", "position"])
+    results["position"] = results["position"].astype(int)
+    results = results.loc[results["position"].between(1, 4)].copy()
+
+    if results.empty:
+        raise ValueError("La tabla de resultados de grupos esta vacia.")
+
+    unknown_teams = sorted(set(results["team"]) - set(base_group_by_team))
+    if unknown_teams:
+        raise ValueError(f"Equipos no encontrados en ratings: {', '.join(unknown_teams)}")
+
+    duplicated_teams = results.loc[results["team"].duplicated(), "team"].tolist()
+    if duplicated_teams:
+        raise ValueError(f"Equipos duplicados en resultados de grupos: {', '.join(duplicated_teams)}")
+
+    mismatched = [
+        f"{row.team} ({row.group} vs {base_group_by_team[row.team]})"
+        for row in results.itertuples()
+        if base_group_by_team[row.team] != row.group
+    ]
+    if mismatched:
+        raise ValueError(
+            "Hay equipos asignados a un grupo distinto al dataset base: "
+            + ", ".join(mismatched)
+        )
+
+    duplicates = results.duplicated(subset=["group", "position"], keep=False)
+    if duplicates.any():
+        bad = results.loc[duplicates, ["group", "position"]].drop_duplicates()
+        labels = [f"{row.group}-{row.position}" for row in bad.itertuples()]
+        raise ValueError(f"Posiciones duplicadas por grupo: {', '.join(labels)}")
+
+    slots: dict[str, str] = {}
+    thirds: list[dict[str, Any]] = []
+    for group in GROUPS:
+        group_rows = results.loc[results["group"] == group].copy()
+        positions = set(group_rows["position"].tolist())
+        required_positions = {1, 2, 3}
+        if not required_positions.issubset(positions):
+            missing_positions = sorted(required_positions - positions)
+            raise ValueError(
+                f"Grupo {group}: faltan posiciones {', '.join(map(str, missing_positions))}."
+            )
+
+        for position in [1, 2, 3]:
+            row = group_rows.loc[group_rows["position"] == position].iloc[0]
+            slots[f"{position}{group}"] = row["team"]
+
+        third = group_rows.loc[group_rows["position"] == 3].iloc[0].to_dict()
+        points = pd.to_numeric(third.get("points", 0), errors="coerce")
+        gf = pd.to_numeric(third.get("gf", 0), errors="coerce")
+        ga = pd.to_numeric(third.get("ga", 0), errors="coerce")
+        points = 0 if pd.isna(points) else int(points)
+        gf = 0 if pd.isna(gf) else int(gf)
+        ga = 0 if pd.isna(ga) else int(ga)
+        thirds.append({
+            "team": third["team"],
+            "group": group,
+            "points": points,
+            "gf": gf,
+            "ga": ga,
+            "gd": gf - ga,
+            "overall": teams[third["team"]]["overall"],
+            "jitter": 0.0,
+        })
+
+    best_thirds = rank_thirds(thirds)[:8]
+    third_assignments = assign_third_slots(best_thirds)
+    return clean, teams, slots, third_assignments, best_thirds
+
+
+def _simulate_knockout_rows(
+    teams: dict[str, dict[str, Any]],
+    slots: dict[str, str],
+    third_assignments: dict[int, str],
+    rng: np.random.Generator,
+    params: SimParams,
+) -> list[dict[str, Any]]:
+    """Simular eliminatorias desde slots fijos y devolver filas de partidos."""
+    rows: list[dict[str, Any]] = []
+    winners: dict[int, str] = {}
+
+    for match_id, (left, right) in R32_MATCHES.items():
+        team_a = resolve_slot(left, slots, third_assignments, match_id)
+        team_b = resolve_slot(right, slots, third_assignments, match_id)
+        winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+        winners[match_id] = winner
+        rows.append({
+            "round": "round_of_32",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+            "winner_pct": None,
+        })
+
+    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+        for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
+            team_a = winners[left_id]
+            team_b = winners[right_id]
+            winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            winners[match_id] = winner
+            rows.append({
+                "round": round_name,
+                "match_id": match_id,
+                "team_a": team_a,
+                "team_b": team_b,
+                "winner": winner,
+                "winner_pct": None,
+            })
+
+    return rows
+
+
+def simulate_bracket_from_group_results(
+    df: pd.DataFrame,
+    group_results: pd.DataFrame,
+    params: SimParams,
+) -> pd.DataFrame:
+    """Simular una llave de eliminatorias condicionada a grupos ya jugados."""
+    _clean, teams, slots, third_assignments, _best_thirds = _prepare_group_results_context(
+        df,
+        group_results,
+        params,
+    )
+    rng = np.random.default_rng(params.seed + 1000)
+    return pd.DataFrame(
+        _simulate_knockout_rows(teams, slots, third_assignments, rng, params)
+    )
+
+
+def simulate_knockout_projection_from_group_results(
+    df: pd.DataFrame,
+    group_results: pd.DataFrame,
+    params: SimParams,
+    n: int | None = None,
+) -> pd.DataFrame:
+    """Estimar probabilidades por ronda usando grupos finales como condicion fija."""
+    clean, teams, slots, third_assignments, best_thirds = _prepare_group_results_context(
+        df,
+        group_results,
+        params,
+    )
+    simulations = int(n or params.simulations)
+    rng = np.random.default_rng(params.seed + 2000)
+    team_names = clean["team"].tolist()
+    stage_counts = {
+        team: {stage: 0 for stage in STAGE_COLUMNS}
+        for team in team_names
+    }
+
+    for group in GROUPS:
+        stage_counts[slots[f"1{group}"]]["group_winner"] = simulations
+        stage_counts[slots[f"2{group}"]]["group_runner_up"] = simulations
+    for row in best_thirds:
+        stage_counts[row["team"]]["best_third"] = simulations
+
+    r32_teams = {slots[f"1{group}"] for group in GROUPS}
+    r32_teams.update(slots[f"2{group}"] for group in GROUPS)
+    r32_teams.update(row["team"] for row in best_thirds)
+    for team in r32_teams:
+        stage_counts[team]["round_of_32"] = simulations
+
+    for _ in range(simulations):
+        rows = _simulate_knockout_rows(teams, slots, third_assignments, rng, params)
+        bracket = {row["match_id"]: row["winner"] for row in rows}
+        for match_id in range(73, 89):
+            stage_counts[bracket[match_id]]["round_of_16"] += 1
+        for match_id in ROUND_TEMPLATES["round_of_16"]:
+            stage_counts[bracket[match_id]]["quarterfinal"] += 1
+        for match_id in ROUND_TEMPLATES["quarterfinal"]:
+            stage_counts[bracket[match_id]]["semifinal"] += 1
+        for match_id in ROUND_TEMPLATES["semifinal"]:
+            stage_counts[bracket[match_id]]["final"] += 1
+        stage_counts[bracket[104]]["champion"] += 1
+
+    base = clean.set_index("team")
+    rows = []
+    for team in team_names:
+        row = {
+            "team": team,
+            "group": base.loc[team, "group"],
+            "confederation": base.loc[team, "confederation"],
+            "is_host": int(base.loc[team, "is_host"]),
+            "overall": teams[team]["overall"],
+            "attack_power": teams[team]["attack_power"],
+            "defense_power": teams[team]["defense_power"],
+        }
+        for stage in STAGE_COLUMNS:
+            row[f"{stage}_pct"] = 100 * stage_counts[team][stage] / simulations
+        rows.append(row)
+
+    return pd.DataFrame(rows).sort_values(
+        ["champion_pct", "final_pct", "semifinal_pct", "overall"],
+        ascending=False,
+    )
+
+
+def simulate_bracket_most_probable_from_group_results(
+    df: pd.DataFrame,
+    group_results: pd.DataFrame,
+    params: SimParams,
+    n: int = 1000,
+) -> pd.DataFrame:
+    """Calcular la llave mas probable condicionada a resultados reales de grupos."""
+    _clean, teams, slots, third_assignments, _best_thirds = _prepare_group_results_context(
+        df,
+        group_results,
+        params,
+    )
+    rng = np.random.default_rng(params.seed + 3000)
+    pair_counts: dict[int, Counter] = defaultdict(Counter)
+    head2head_counts: dict[int, dict[tuple, Counter]] = defaultdict(lambda: defaultdict(Counter))
+
+    for _ in range(n):
+        winners: dict[int, str] = {}
+        for match_id, (left, right) in R32_MATCHES.items():
+            team_a = resolve_slot(left, slots, third_assignments, match_id)
+            team_b = resolve_slot(right, slots, third_assignments, match_id)
+            winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            winners[match_id] = winner
+            pair = tuple(sorted([team_a, team_b]))
+            pair_counts[match_id][pair] += 1
+            head2head_counts[match_id][pair][winner] += 1
+
+        for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+            for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
+                team_a = winners[left_id]
+                team_b = winners[right_id]
+                winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+                winners[match_id] = winner
+                pair = tuple(sorted([team_a, team_b]))
+                pair_counts[match_id][pair] += 1
+                head2head_counts[match_id][pair][winner] += 1
+
+    coherent_winner: dict[int, str] = {}
+    rows: list[dict[str, Any]] = []
+
+    for match_id in sorted(R32_MATCHES):
+        most_common_pair = pair_counts[match_id].most_common(1)[0][0]
+        team_a, team_b = most_common_pair
+        head2head = head2head_counts[match_id].get(most_common_pair, Counter())
+        total_h2h = sum(head2head.values())
+        winner = head2head.most_common(1)[0][0] if head2head else team_a
+        win_count = head2head[winner] if total_h2h else 0
+        pct = round(100 * win_count / total_h2h, 1) if total_h2h else None
+        coherent_winner[match_id] = winner
+        rows.append({
+            "round": "round_of_32",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+            "winner_pct": pct,
+        })
+
+    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+        for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
+            team_a = coherent_winner[left_id]
+            team_b = coherent_winner[right_id]
+            pair = tuple(sorted([team_a, team_b]))
+            head2head = head2head_counts[match_id].get(pair, Counter())
+            total_h2h = sum(head2head.values())
+            if head2head:
+                winner = head2head.most_common(1)[0][0]
+                pct = round(100 * head2head[winner] / total_h2h, 1)
+            else:
+                winner = team_a if teams[team_a]["overall"] >= teams[team_b]["overall"] else team_b
+                pct = None
+            coherent_winner[match_id] = winner
+            rows.append({
+                "round": round_name,
+                "match_id": match_id,
+                "team_a": team_a,
+                "team_b": team_b,
+                "winner": winner,
+                "winner_pct": pct,
+            })
+
+    return pd.DataFrame(rows)
+
+
 def simulate_bracket_most_probable(
     df: pd.DataFrame,
     params: SimParams,
