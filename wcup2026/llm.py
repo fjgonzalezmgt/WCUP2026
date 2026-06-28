@@ -478,6 +478,113 @@ def call_llm_group_results_update(model: str, teams: pd.DataFrame) -> pd.DataFra
     return result.sort_values(["group", "position"]).reset_index(drop=True)
 
 
+def call_llm_knockout_results_update(model: str, fixtures: pd.DataFrame) -> pd.DataFrame:
+    """Usar busqueda web para obtener ganadores confirmados de eliminatorias.
+
+    Parameters
+    ----------
+    model : str
+        Nombre del modelo OpenAI.
+    fixtures : pd.DataFrame
+        Tabla de llaves con columnas ``match_id``, ``round``, ``team_a`` y
+        ``team_b``. Se usa para restringir las respuestas a partidos y equipos
+        validos del simulador.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame con columnas ``match_id`` y ``winner`` para partidos ya
+        jugados y confirmados.
+    """
+    from openai import OpenAI
+
+    client = OpenAI()
+    required = {"match_id", "round", "team_a", "team_b"}
+    missing = required.difference(fixtures.columns)
+    if missing:
+        raise ValueError(
+            "La tabla de fixtures no incluye columnas requeridas: "
+            + ", ".join(sorted(missing))
+        )
+
+    valid_rows = fixtures[list(required)].copy()
+    valid_rows["match_id"] = pd.to_numeric(valid_rows["match_id"], errors="coerce").fillna(0).astype(int)
+    valid_rows["round"] = valid_rows["round"].astype(str).str.strip()
+    valid_rows["team_a"] = valid_rows["team_a"].astype(str).str.strip()
+    valid_rows["team_b"] = valid_rows["team_b"].astype(str).str.strip()
+    valid_rows = valid_rows.sort_values("match_id")
+
+    schema_example = json.dumps(
+        {
+            "knockout_results": [
+                {
+                    "match_id": 73,
+                    "winner": "South Africa",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    prompt = (
+        f"Fecha de consulta: {date.today().isoformat()}.\n"
+        "Busca resultados oficiales/confirmados de las rondas eliminatorias del Mundial FIFA 2026.\n"
+        "Debes usar UNICAMENTE los partidos/equipos de esta tabla de llaves:\n"
+        f"{json.dumps(valid_rows.to_dict(orient='records'), ensure_ascii=False)}\n\n"
+        "Devuelve SOLO JSON valido con este esquema exacto:\n"
+        f"{schema_example}\n\n"
+        "Reglas estrictas:\n"
+        "- Incluye solo partidos ya jugados y con ganador confirmado.\n"
+        "- winner debe ser exactamente team_a o team_b del match_id correspondiente.\n"
+        "- Si un partido no esta jugado o no hay confirmacion fiable, NO lo incluyas.\n"
+        "- No inventes partidos, no inventes equipos, no cambies nombres.\n"
+        "- No incluyas texto fuera del JSON."
+    )
+
+    response = client.responses.create(
+        model=model,
+        tools=[
+            {
+                "type": "web_search",
+                "search_context_size": "high",
+                "user_location": {
+                    "type": "approximate",
+                    "country": "US",
+                    "timezone": "America/Guatemala",
+                },
+            }
+        ],
+        tool_choice="required",
+        include=["web_search_call.action.sources"],
+        instructions=(
+            "Eres un analista de resultados FIFA. Debes usar busqueda web antes de responder. "
+            "Prioriza FIFA.com y fuentes deportivas confiables. Devuelve UNICAMENTE JSON valido "
+            "con el esquema solicitado, sin markdown ni explicaciones."
+        ),
+        input=prompt,
+    )
+
+    data = _extract_json(_extract_response_text(response))
+    rows = data.get("knockout_results", data) if isinstance(data, dict) else data
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return pd.DataFrame(columns=["match_id", "winner"])
+
+    expected = {"match_id", "winner"}
+    missing_cols = expected.difference(result.columns)
+    if missing_cols:
+        raise ValueError(
+            "La respuesta de eliminatorias no incluyo columnas requeridas: "
+            + ", ".join(sorted(missing_cols))
+        )
+
+    result = result[["match_id", "winner"]].copy()
+    result["match_id"] = pd.to_numeric(result["match_id"], errors="coerce").fillna(0).astype(int)
+    result["winner"] = result["winner"].astype(str).str.strip()
+    result = result.loc[(result["match_id"] > 0) & (result["winner"] != "")]
+    return result.sort_values("match_id").reset_index(drop=True)
+
+
 def call_llm_analysis(model: str, payload: dict[str, Any]) -> str:
     """Llamar a la API de OpenAI Responses y devolver el texto generado.
 

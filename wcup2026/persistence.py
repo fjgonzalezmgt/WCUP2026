@@ -15,6 +15,9 @@ from wcup2026.config import LLM_ANALYSIS_PATH, MONTECARLO_RESULTS_PATH, RESULTS_
 from wcup2026.parameters import SimParams
 
 
+POST_GROUP_STATE_PATH = RESULTS_DIR / "post_group_state.xlsx"
+
+
 def ensure_results_dir() -> None:
     """Crear la carpeta de resultados si no existe.
 
@@ -182,3 +185,56 @@ def load_llm_analysis(path: Path = LLM_ANALYSIS_PATH) -> str | None:
         return None
     text = path.read_text(encoding="utf-8").strip()
     return text or None
+
+
+def save_post_group_state(
+    group_results_input: pd.DataFrame,
+    knockout_input: pd.DataFrame,
+    knockout_results: pd.DataFrame,
+    projection: pd.DataFrame | None = None,
+    bracket: pd.DataFrame | None = None,
+    bracket_probable: pd.DataFrame | None = None,
+    path: Path = POST_GROUP_STATE_PATH,
+) -> None:
+    """Guardar el estado post-grupos para restaurarlo en nuevas sesiones.
+
+    Persiste la tabla editable de grupos, la tabla editable de eliminatorias,
+    los resultados KO normalizados y, opcionalmente, la ultima proyeccion y
+    llaves generadas.
+    """
+    ensure_results_dir()
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        group_results_input.to_excel(writer, sheet_name="group_results_input", index=False)
+        knockout_input.to_excel(writer, sheet_name="knockout_input", index=False)
+        knockout_results.to_excel(writer, sheet_name="knockout_results", index=False)
+        if projection is not None and not projection.empty:
+            projection.to_excel(writer, sheet_name="projection", index=False)
+        if bracket is not None and not bracket.empty:
+            bracket.to_excel(writer, sheet_name="bracket", index=False)
+        if bracket_probable is not None and not bracket_probable.empty:
+            bracket_probable.to_excel(writer, sheet_name="bracket_probable", index=False)
+
+
+def load_post_group_state(
+    path: Path = POST_GROUP_STATE_PATH,
+) -> dict[str, pd.DataFrame] | None:
+    """Cargar el estado post-grupos previamente guardado."""
+    if not path.exists():
+        return None
+    try:
+        xl = pd.ExcelFile(path)
+        state: dict[str, pd.DataFrame] = {}
+        expected = [
+            "group_results_input",
+            "knockout_input",
+            "knockout_results",
+            "projection",
+            "bracket",
+            "bracket_probable",
+        ]
+        for sheet in expected:
+            if sheet in xl.sheet_names:
+                state[sheet] = pd.read_excel(xl, sheet_name=sheet)
+        return state if state else None
+    except Exception:
+        return None

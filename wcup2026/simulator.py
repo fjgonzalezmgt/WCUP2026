@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from wcup2026.bracket import R32_MATCHES, ROUND_TEMPLATES
+from wcup2026.bracket import R32_MATCHES, R32_SCHEDULED_FIXTURES_2026, ROUND_TEMPLATES
 from wcup2026.config import GROUPS, STAGE_COLUMNS
 from wcup2026.data import prepare_teams
 from wcup2026.parameters import SimParams
@@ -397,6 +397,94 @@ def resolve_slot(
     raise ValueError(f"Unknown reference kind: {kind}")
 
 
+def _select_coherent_r32_pairs(
+    pair_counts: dict[int, Counter],
+    candidate_limit: int = 12,
+) -> dict[int, tuple[str, str]]:
+    """Seleccionar pares de R32 sin equipos repetidos y con alta frecuencia.
+
+    Construye una asignacion global de emparejamientos para la ronda de 32
+    maximizando la suma de frecuencias observadas en ``pair_counts`` y
+    exigiendo que cada equipo aparezca en un unico partido.
+
+    Si no encuentra solucion completa, retorna una solucion greedy de
+    respaldo.
+    """
+    match_ids = sorted(R32_MATCHES)
+    candidates: dict[int, list[tuple[tuple[str, str], int]]] = {}
+    for match_id in match_ids:
+        ranked = pair_counts[match_id].most_common(candidate_limit)
+        if not ranked:
+            continue
+        candidates[match_id] = ranked
+
+    ordered_matches = sorted(match_ids, key=lambda match_id: len(candidates.get(match_id, [])))
+    if not ordered_matches:
+        return {}
+
+    remaining_best: list[int] = []
+    running = 0
+    for match_id in reversed(ordered_matches):
+        top = candidates.get(match_id, [((), 0)])[0][1]
+        running += top
+        remaining_best.append(running)
+    remaining_best.reverse()
+
+    best_score = -1
+    best_assignment: dict[int, tuple[str, str]] = {}
+
+    def backtrack(
+        index: int,
+        used: set[str],
+        current_score: int,
+        current_assignment: dict[int, tuple[str, str]],
+    ) -> None:
+        nonlocal best_score, best_assignment
+        if index == len(ordered_matches):
+            if current_score > best_score:
+                best_score = current_score
+                best_assignment = dict(current_assignment)
+            return
+
+        if current_score + remaining_best[index] <= best_score:
+            return
+
+        match_id = ordered_matches[index]
+        for pair, count in candidates.get(match_id, []):
+            team_a, team_b = pair
+            if team_a in used or team_b in used:
+                continue
+            current_assignment[match_id] = pair
+            used.add(team_a)
+            used.add(team_b)
+            backtrack(index + 1, used, current_score + count, current_assignment)
+            used.remove(team_a)
+            used.remove(team_b)
+            current_assignment.pop(match_id, None)
+
+    backtrack(0, set(), 0, {})
+    if len(best_assignment) == len(match_ids):
+        return best_assignment
+
+    fallback: dict[int, tuple[str, str]] = {}
+    used: set[str] = set()
+    for match_id in ordered_matches:
+        chosen: tuple[str, str] | None = None
+        for pair, _count in candidates.get(match_id, []):
+            team_a, team_b = pair
+            if team_a in used or team_b in used:
+                continue
+            chosen = pair
+            break
+        if chosen is None and candidates.get(match_id):
+            chosen = candidates[match_id][0][0]
+        if chosen is None:
+            continue
+        fallback[match_id] = chosen
+        used.update(chosen)
+    return fallback
+
+
 def simulate_knockout_pair(
     team_a: str,
     team_b: str,
@@ -730,7 +818,14 @@ def _prepare_group_results_context(
     df: pd.DataFrame,
     group_results: pd.DataFrame,
     params: SimParams,
-) -> tuple[pd.DataFrame, dict[str, dict[str, Any]], dict[str, str], dict[int, str], list[dict[str, Any]]]:
+) -> tuple[
+    pd.DataFrame,
+    dict[str, dict[str, Any]],
+    dict[str, str],
+    dict[int, str],
+    list[dict[str, Any]],
+    dict[int, tuple[str, str]] | None,
+]:
     """Preparar slots de eliminatoria desde resultados finales de grupos.
 
     ``group_results`` debe incluir al menos ``group``, ``position`` y
@@ -819,7 +914,23 @@ def _prepare_group_results_context(
 
     best_thirds = rank_thirds(thirds)[:8]
     third_assignments = assign_third_slots(best_thirds)
-    return clean, teams, slots, third_assignments, best_thirds
+
+    # Si los cruces oficiales ya calendarizados son compatibles con los
+    # 32 clasificados entregados por el usuario, se usan tal cual.
+    qualified = {slots[f"1{group}"] for group in GROUPS}
+    qualified.update(slots[f"2{group}"] for group in GROUPS)
+    qualified.update(row["team"] for row in best_thirds)
+
+    scheduled_teams = {
+        team
+        for fixture in R32_SCHEDULED_FIXTURES_2026.values()
+        for team in fixture
+    }
+    scheduled_r32_pairs = None
+    if qualified == scheduled_teams:
+        scheduled_r32_pairs = dict(R32_SCHEDULED_FIXTURES_2026)
+
+    return clean, teams, slots, third_assignments, best_thirds, scheduled_r32_pairs
 
 
 def _simulate_knockout_rows(
@@ -828,15 +939,31 @@ def _simulate_knockout_rows(
     third_assignments: dict[int, str],
     rng: np.random.Generator,
     params: SimParams,
+    scheduled_r32_pairs: dict[int, tuple[str, str]] | None = None,
+    fixed_winners: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Simular eliminatorias desde slots fijos y devolver filas de partidos."""
     rows: list[dict[str, Any]] = []
     winners: dict[int, str] = {}
+    fixed_winners = fixed_winners or {}
+
+    def pick_winner(match_id: int, team_a: str, team_b: str) -> str:
+        fixed = fixed_winners.get(match_id)
+        if fixed is not None:
+            if fixed not in {team_a, team_b}:
+                raise ValueError(
+                    f"Partido {match_id}: ganador fijo '{fixed}' no coincide con {team_a} vs {team_b}."
+                )
+            return fixed
+        return simulate_knockout_pair(team_a, team_b, teams, rng, params)
 
     for match_id, (left, right) in R32_MATCHES.items():
-        team_a = resolve_slot(left, slots, third_assignments, match_id)
-        team_b = resolve_slot(right, slots, third_assignments, match_id)
-        winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+        if scheduled_r32_pairs is not None and match_id in scheduled_r32_pairs:
+            team_a, team_b = scheduled_r32_pairs[match_id]
+        else:
+            team_a = resolve_slot(left, slots, third_assignments, match_id)
+            team_b = resolve_slot(right, slots, third_assignments, match_id)
+        winner = pick_winner(match_id, team_a, team_b)
         winners[match_id] = winner
         rows.append({
             "round": "round_of_32",
@@ -851,7 +978,7 @@ def _simulate_knockout_rows(
         for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
             team_a = winners[left_id]
             team_b = winners[right_id]
-            winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            winner = pick_winner(match_id, team_a, team_b)
             winners[match_id] = winner
             rows.append({
                 "round": round_name,
@@ -865,20 +992,134 @@ def _simulate_knockout_rows(
     return rows
 
 
-def simulate_bracket_from_group_results(
+def _normalize_fixed_winners(knockout_results: pd.DataFrame | None) -> dict[int, str]:
+    """Convertir una tabla editable de resultados de KO a mapeo ``match_id->winner``."""
+    if knockout_results is None or knockout_results.empty:
+        return {}
+
+    required = {"match_id", "winner"}
+    missing = required.difference(knockout_results.columns)
+    if missing:
+        raise ValueError(
+            "Faltan columnas en resultados de eliminatorias: " + ", ".join(sorted(missing))
+        )
+
+    clean = knockout_results[["match_id", "winner"]].copy()
+    clean["match_id"] = pd.to_numeric(clean["match_id"], errors="coerce")
+    clean = clean.dropna(subset=["match_id"])
+    clean["match_id"] = clean["match_id"].astype(int)
+    clean["winner"] = clean["winner"].astype(str).str.strip()
+    clean = clean.loc[clean["winner"] != ""].copy()
+    clean = clean.loc[clean["match_id"].between(73, 104)].copy()
+
+    duplicated = clean.loc[clean["match_id"].duplicated(), "match_id"].tolist()
+    if duplicated:
+        raise ValueError(
+            "Partidos duplicados en resultados de eliminatorias: "
+            + ", ".join(map(str, sorted(set(duplicated))))
+        )
+
+    return dict(zip(clean["match_id"].tolist(), clean["winner"].tolist()))
+
+
+def build_knockout_state_from_group_results(
     df: pd.DataFrame,
     group_results: pd.DataFrame,
     params: SimParams,
+    knockout_results: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Simular una llave de eliminatorias condicionada a grupos ya jugados."""
-    _clean, teams, slots, third_assignments, _best_thirds = _prepare_group_results_context(
+    """Construir estado de llaves (equipos y ganadores fijos) desde grupos.
+
+    Devuelve una tabla editable para capturar resultados reales de KO por
+    partido. Si existen ganadores fijos, avanza esos equipos para concretar
+    cruces de rondas siguientes.
+    """
+    _clean, _teams, slots, third_assignments, _best_thirds, scheduled_r32_pairs = _prepare_group_results_context(
         df,
         group_results,
         params,
     )
+    fixed_winners = _normalize_fixed_winners(knockout_results)
+
+    rows: list[dict[str, Any]] = []
+    winners_or_placeholders: dict[int, str] = {}
+
+    for match_id, (left, right) in R32_MATCHES.items():
+        if scheduled_r32_pairs is not None and match_id in scheduled_r32_pairs:
+            team_a, team_b = scheduled_r32_pairs[match_id]
+        else:
+            team_a = resolve_slot(left, slots, third_assignments, match_id)
+            team_b = resolve_slot(right, slots, third_assignments, match_id)
+
+        winner = fixed_winners.get(match_id, "")
+        if winner and winner not in {team_a, team_b}:
+            raise ValueError(
+                f"Partido {match_id}: ganador '{winner}' no coincide con {team_a} vs {team_b}."
+            )
+        winners_or_placeholders[match_id] = winner if winner else f"Ganador {match_id}"
+        rows.append(
+            {
+                "round": "round_of_32",
+                "match_id": match_id,
+                "team_a": team_a,
+                "team_b": team_b,
+                "winner": winner,
+            }
+        )
+
+    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+        for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
+            team_a = winners_or_placeholders[left_id]
+            team_b = winners_or_placeholders[right_id]
+            winner = fixed_winners.get(match_id, "")
+
+            both_concrete = not team_a.startswith("Ganador ") and not team_b.startswith("Ganador ")
+            if winner:
+                if not both_concrete or winner not in {team_a, team_b}:
+                    raise ValueError(
+                        f"Partido {match_id}: ganador '{winner}' no coincide con {team_a} vs {team_b}."
+                    )
+                winners_or_placeholders[match_id] = winner
+            else:
+                winners_or_placeholders[match_id] = f"Ganador {match_id}"
+
+            rows.append(
+                {
+                    "round": round_name,
+                    "match_id": match_id,
+                    "team_a": team_a,
+                    "team_b": team_b,
+                    "winner": winner,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def simulate_bracket_from_group_results(
+    df: pd.DataFrame,
+    group_results: pd.DataFrame,
+    params: SimParams,
+    knockout_results: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Simular una llave de eliminatorias condicionada a grupos ya jugados."""
+    _clean, teams, slots, third_assignments, _best_thirds, scheduled_r32_pairs = _prepare_group_results_context(
+        df,
+        group_results,
+        params,
+    )
+    fixed_winners = _normalize_fixed_winners(knockout_results)
     rng = np.random.default_rng(params.seed + 1000)
     return pd.DataFrame(
-        _simulate_knockout_rows(teams, slots, third_assignments, rng, params)
+        _simulate_knockout_rows(
+            teams,
+            slots,
+            third_assignments,
+            rng,
+            params,
+            scheduled_r32_pairs=scheduled_r32_pairs,
+            fixed_winners=fixed_winners,
+        )
     )
 
 
@@ -887,13 +1128,15 @@ def simulate_knockout_projection_from_group_results(
     group_results: pd.DataFrame,
     params: SimParams,
     n: int | None = None,
+    knockout_results: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Estimar probabilidades por ronda usando grupos finales como condicion fija."""
-    clean, teams, slots, third_assignments, best_thirds = _prepare_group_results_context(
+    clean, teams, slots, third_assignments, best_thirds, scheduled_r32_pairs = _prepare_group_results_context(
         df,
         group_results,
         params,
     )
+    fixed_winners = _normalize_fixed_winners(knockout_results)
     simulations = int(n or params.simulations)
     rng = np.random.default_rng(params.seed + 2000)
     team_names = clean["team"].tolist()
@@ -915,7 +1158,15 @@ def simulate_knockout_projection_from_group_results(
         stage_counts[team]["round_of_32"] = simulations
 
     for _ in range(simulations):
-        rows = _simulate_knockout_rows(teams, slots, third_assignments, rng, params)
+        rows = _simulate_knockout_rows(
+            teams,
+            slots,
+            third_assignments,
+            rng,
+            params,
+            scheduled_r32_pairs=scheduled_r32_pairs,
+            fixed_winners=fixed_winners,
+        )
         bracket = {row["match_id"]: row["winner"] for row in rows}
         for match_id in range(73, 89):
             stage_counts[bracket[match_id]]["round_of_16"] += 1
@@ -954,13 +1205,15 @@ def simulate_bracket_most_probable_from_group_results(
     group_results: pd.DataFrame,
     params: SimParams,
     n: int = 1000,
+    knockout_results: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Calcular la llave mas probable condicionada a resultados reales de grupos."""
-    _clean, teams, slots, third_assignments, _best_thirds = _prepare_group_results_context(
+    _clean, teams, slots, third_assignments, _best_thirds, scheduled_r32_pairs = _prepare_group_results_context(
         df,
         group_results,
         params,
     )
+    fixed_winners = _normalize_fixed_winners(knockout_results)
     rng = np.random.default_rng(params.seed + 3000)
     pair_counts: dict[int, Counter] = defaultdict(Counter)
     head2head_counts: dict[int, dict[tuple, Counter]] = defaultdict(lambda: defaultdict(Counter))
@@ -968,9 +1221,19 @@ def simulate_bracket_most_probable_from_group_results(
     for _ in range(n):
         winners: dict[int, str] = {}
         for match_id, (left, right) in R32_MATCHES.items():
-            team_a = resolve_slot(left, slots, third_assignments, match_id)
-            team_b = resolve_slot(right, slots, third_assignments, match_id)
-            winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            if scheduled_r32_pairs is not None and match_id in scheduled_r32_pairs:
+                team_a, team_b = scheduled_r32_pairs[match_id]
+            else:
+                team_a = resolve_slot(left, slots, third_assignments, match_id)
+                team_b = resolve_slot(right, slots, third_assignments, match_id)
+            winner = fixed_winners.get(match_id)
+            if winner is not None:
+                if winner not in {team_a, team_b}:
+                    raise ValueError(
+                        f"Partido {match_id}: ganador fijo '{winner}' no coincide con {team_a} vs {team_b}."
+                    )
+            else:
+                winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
             winners[match_id] = winner
             pair = tuple(sorted([team_a, team_b]))
             pair_counts[match_id][pair] += 1
@@ -980,7 +1243,14 @@ def simulate_bracket_most_probable_from_group_results(
             for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
                 team_a = winners[left_id]
                 team_b = winners[right_id]
-                winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+                winner = fixed_winners.get(match_id)
+                if winner is not None:
+                    if winner not in {team_a, team_b}:
+                        raise ValueError(
+                            f"Partido {match_id}: ganador fijo '{winner}' no coincide con {team_a} vs {team_b}."
+                        )
+                else:
+                    winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
                 winners[match_id] = winner
                 pair = tuple(sorted([team_a, team_b]))
                 pair_counts[match_id][pair] += 1
@@ -989,10 +1259,13 @@ def simulate_bracket_most_probable_from_group_results(
     coherent_winner: dict[int, str] = {}
     rows: list[dict[str, Any]] = []
 
+    selected_pairs = _select_coherent_r32_pairs(pair_counts)
     for match_id in sorted(R32_MATCHES):
-        most_common_pair = pair_counts[match_id].most_common(1)[0][0]
-        team_a, team_b = most_common_pair
-        head2head = head2head_counts[match_id].get(most_common_pair, Counter())
+        selected_pair = selected_pairs.get(match_id)
+        if selected_pair is None:
+            selected_pair = pair_counts[match_id].most_common(1)[0][0]
+        team_a, team_b = selected_pair
+        head2head = head2head_counts[match_id].get(selected_pair, Counter())
         total_h2h = sum(head2head.values())
         winner = head2head.most_common(1)[0][0] if head2head else team_a
         win_count = head2head[winner] if total_h2h else 0
@@ -1123,10 +1396,13 @@ def simulate_bracket_most_probable(
     rows: list[dict[str, Any]] = []
 
     # --- Ronda de 32 ---
+    selected_pairs = _select_coherent_r32_pairs(pair_counts)
     for match_id in sorted(R32_MATCHES):
-        most_common_pair = pair_counts[match_id].most_common(1)[0][0]
-        team_a, team_b = most_common_pair
-        head2head = head2head_counts[match_id].get(most_common_pair, Counter())
+        selected_pair = selected_pairs.get(match_id)
+        if selected_pair is None:
+            selected_pair = pair_counts[match_id].most_common(1)[0][0]
+        team_a, team_b = selected_pair
+        head2head = head2head_counts[match_id].get(selected_pair, Counter())
         total_h2h = sum(head2head.values())
         winner = head2head.most_common(1)[0][0] if head2head else team_a
         win_count = head2head[winner] if total_h2h else 0

@@ -44,6 +44,7 @@ from wcup2026.llm import (
     build_analysis_payload,
     call_llm_analysis,
     call_llm_group_results_update,
+    call_llm_knockout_results_update,
     call_llm_news_search,
     call_llm_ratings_update,
     default_model,
@@ -54,11 +55,14 @@ from wcup2026.persistence import (
     load_bracket_probable,
     load_llm_analysis,
     load_montecarlo_results,
+    load_post_group_state,
     save_llm_analysis,
     save_montecarlo_results,
+    save_post_group_state,
 )
 import wcup2026.report as report_module
 from wcup2026.simulator import (
+    build_knockout_state_from_group_results,
     describe_matchup,
     simulate_bracket_from_group_results,
     simulate_bracket_most_probable,
@@ -276,30 +280,40 @@ def run_bracket_probable_cached(csv_text: str, params: SimParams) -> pd.DataFram
 def run_post_group_bracket_cached(
     csv_text: str,
     group_results_csv_text: str,
+    knockout_results_csv_text: str,
     params: SimParams,
 ) -> pd.DataFrame:
     """Generar una llave representativa desde resultados finales de grupos."""
     df = dataframe_from_csv_text(csv_text)
     group_results = dataframe_from_csv_text(group_results_csv_text)
+    knockout_results = dataframe_from_csv_text(knockout_results_csv_text)
     validate_team_data(df)
-    return simulate_bracket_from_group_results(df, group_results, params)
+    return simulate_bracket_from_group_results(
+        df,
+        group_results,
+        params,
+        knockout_results=knockout_results,
+    )
 
 
 @st.cache_data(show_spinner=False)
 def run_post_group_bracket_probable_cached(
     csv_text: str,
     group_results_csv_text: str,
+    knockout_results_csv_text: str,
     params: SimParams,
 ) -> pd.DataFrame:
     """Generar la llave mas probable desde resultados finales de grupos."""
     df = dataframe_from_csv_text(csv_text)
     group_results = dataframe_from_csv_text(group_results_csv_text)
+    knockout_results = dataframe_from_csv_text(knockout_results_csv_text)
     validate_team_data(df)
     return simulate_bracket_most_probable_from_group_results(
         df,
         group_results,
         params,
         n=1000,
+        knockout_results=knockout_results,
     )
 
 
@@ -307,13 +321,40 @@ def run_post_group_bracket_probable_cached(
 def run_post_group_projection_cached(
     csv_text: str,
     group_results_csv_text: str,
+    knockout_results_csv_text: str,
     params: SimParams,
 ) -> pd.DataFrame:
     """Estimar probabilidades de eliminatorias desde grupos ya definidos."""
     df = dataframe_from_csv_text(csv_text)
     group_results = dataframe_from_csv_text(group_results_csv_text)
+    knockout_results = dataframe_from_csv_text(knockout_results_csv_text)
     validate_team_data(df)
-    return simulate_knockout_projection_from_group_results(df, group_results, params)
+    return simulate_knockout_projection_from_group_results(
+        df,
+        group_results,
+        params,
+        knockout_results=knockout_results,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def build_post_group_knockout_state_cached(
+    csv_text: str,
+    group_results_csv_text: str,
+    knockout_results_csv_text: str,
+    params: SimParams,
+) -> pd.DataFrame:
+    """Construir estado editable de eliminatorias desde grupos + resultados KO parciales."""
+    df = dataframe_from_csv_text(csv_text)
+    group_results = dataframe_from_csv_text(group_results_csv_text)
+    knockout_results = dataframe_from_csv_text(knockout_results_csv_text)
+    validate_team_data(df)
+    return build_knockout_state_from_group_results(
+        df,
+        group_results,
+        params,
+        knockout_results=knockout_results,
+    )
 
 
 @st.cache_data(show_spinner="Simulando torneos...")
@@ -419,6 +460,42 @@ def load_persisted_outputs_once() -> None:
             st.session_state.setdefault("llm_answer", llm_answer)
     except Exception as exc:  # pragma: no cover - UI guardrail
         st.warning(f"No se pudo cargar el analisis LLM guardado: {exc}")
+
+    try:
+        post_group_state = load_post_group_state()
+        if post_group_state is not None:
+            if "group_results_input" in post_group_state:
+                st.session_state.setdefault(
+                    "post_group_results_input",
+                    post_group_state["group_results_input"],
+                )
+            if "knockout_input" in post_group_state:
+                st.session_state.setdefault(
+                    "post_group_knockout_input",
+                    post_group_state["knockout_input"],
+                )
+            if "knockout_results" in post_group_state:
+                st.session_state.setdefault(
+                    "post_group_knockout_results",
+                    post_group_state["knockout_results"],
+                )
+            if "projection" in post_group_state:
+                st.session_state.setdefault(
+                    "post_group_projection",
+                    post_group_state["projection"],
+                )
+            if "bracket" in post_group_state:
+                st.session_state.setdefault(
+                    "post_group_bracket",
+                    post_group_state["bracket"],
+                )
+            if "bracket_probable" in post_group_state:
+                st.session_state.setdefault(
+                    "post_group_bracket_probable",
+                    post_group_state["bracket_probable"],
+                )
+    except Exception as exc:  # pragma: no cover - UI guardrail
+        st.warning(f"No se pudo cargar el estado post-grupos: {exc}")
 
     st.session_state["_persisted_outputs_loaded"] = True
 
@@ -1382,6 +1459,93 @@ def normalize_group_results_update(update: pd.DataFrame, df: pd.DataFrame) -> pd
     return clean.sort_values(["group", "position"]).reset_index(drop=True)
 
 
+def normalize_knockout_results_update(update: pd.DataFrame, fixtures: pd.DataFrame) -> pd.DataFrame:
+    """Validar ganadores cargados para partidos de eliminatoria."""
+    required = {"match_id", "winner"}
+    missing = required.difference(update.columns)
+    if missing:
+        raise ValueError(f"Faltan columnas en resultados KO: {', '.join(sorted(missing))}")
+
+    base_required = {"match_id", "team_a", "team_b"}
+    missing_base = base_required.difference(fixtures.columns)
+    if missing_base:
+        raise ValueError(
+            "La tabla de fixtures no incluye columnas requeridas: "
+            + ", ".join(sorted(missing_base))
+        )
+
+    clean = update[["match_id", "winner"]].copy()
+    clean["match_id"] = pd.to_numeric(clean["match_id"], errors="coerce")
+    clean = clean.dropna(subset=["match_id"])
+    clean["match_id"] = clean["match_id"].astype(int)
+    clean["winner"] = clean["winner"].astype(str).str.strip()
+    clean = clean.loc[clean["winner"] != ""].copy()
+
+    duplicated = clean.loc[clean["match_id"].duplicated(), "match_id"].tolist()
+    if duplicated:
+        raise ValueError(
+            "Partidos duplicados en resultados KO: "
+            + ", ".join(map(str, sorted(set(duplicated))))
+        )
+
+    fixture_map = (
+        fixtures[["match_id", "team_a", "team_b"]]
+        .copy()
+        .assign(match_id=lambda data: pd.to_numeric(data["match_id"], errors="coerce").fillna(0).astype(int))
+        .set_index("match_id")
+        .to_dict(orient="index")
+    )
+
+    unknown_matches = sorted(set(clean["match_id"]) - set(fixture_map))
+    if unknown_matches:
+        raise ValueError(
+            "Hay partidos KO no reconocidos: " + ", ".join(map(str, unknown_matches))
+        )
+
+    errors: list[str] = []
+    for row in clean.itertuples():
+        fixture = fixture_map[row.match_id]
+        team_a = str(fixture["team_a"]).strip()
+        team_b = str(fixture["team_b"]).strip()
+        if team_a.startswith("Ganador ") or team_b.startswith("Ganador "):
+            errors.append(
+                f"Partido {row.match_id}: aun no se conocen ambos rivales ({team_a} vs {team_b})."
+            )
+            continue
+        if row.winner not in {team_a, team_b}:
+            errors.append(
+                f"Partido {row.match_id}: ganador '{row.winner}' no coincide con {team_a} vs {team_b}."
+            )
+    if errors:
+        raise ValueError("; ".join(errors[:6]))
+
+    return clean.sort_values("match_id").reset_index(drop=True)
+
+
+def save_post_group_state_from_session() -> None:
+    """Persistir el estado post-grupos actual del session_state."""
+    group_results_input = st.session_state.get("post_group_results_input")
+    if not isinstance(group_results_input, pd.DataFrame):
+        return
+
+    knockout_input = st.session_state.get("post_group_knockout_input")
+    if not isinstance(knockout_input, pd.DataFrame):
+        knockout_input = pd.DataFrame(columns=["round", "match_id", "team_a", "team_b", "winner"])
+
+    knockout_results = st.session_state.get("post_group_knockout_results")
+    if not isinstance(knockout_results, pd.DataFrame):
+        knockout_results = pd.DataFrame(columns=["match_id", "winner"])
+
+    save_post_group_state(
+        group_results_input=group_results_input,
+        knockout_input=knockout_input,
+        knockout_results=knockout_results,
+        projection=st.session_state.get("post_group_projection"),
+        bracket=st.session_state.get("post_group_bracket"),
+        bracket_probable=st.session_state.get("post_group_bracket_probable"),
+    )
+
+
 def render_post_group_knockout_view(
     df: pd.DataFrame,
     params: SimParams,
@@ -1394,8 +1558,12 @@ def render_post_group_knockout_view(
     if show_header:
         st.subheader("Llaves desde resultados de grupos")
         st.markdown(
-            '<div class="small-note">Carga la tabla final de cada grupo. La app fija 1°, 2° y mejores 3° clasificados, arma la ronda de 32 FIFA y simula solo las eliminatorias.</div>',
+            '<div class="small-note">Carga la tabla final de grupos y, opcionalmente, fija resultados reales de eliminatorias por ronda. El modelo vuelve a correr solo para los partidos restantes.</div>',
             unsafe_allow_html=True,
+        )
+        st.info(
+            "Paso 1: valida grupos. Paso 2: registra resultados KO ya jugados (manual o IA). "
+            "Paso 3: pulsa Modelar llaves con estos resultados."
         )
 
     source_signature = dataframe_to_csv_text(
@@ -1406,7 +1574,10 @@ def render_post_group_knockout_view(
         or st.session_state.get("_post_group_results_source") != source_signature
     ):
         st.session_state["post_group_results_input"] = build_group_results_template(df)
+        st.session_state["post_group_knockout_results"] = pd.DataFrame(columns=["match_id", "winner"])
+        st.session_state["post_group_knockout_input"] = pd.DataFrame()
         st.session_state["_post_group_results_source"] = source_signature
+        save_post_group_state_from_session()
 
     with st.expander("Cargar tabla final de fase de grupos", expanded=True):
         st.markdown(
@@ -1425,6 +1596,7 @@ def render_post_group_knockout_view(
                             update,
                             df,
                         )
+                        save_post_group_state_from_session()
                     st.success("Tabla de grupos actualizada con busqueda web.")
                     st.rerun()
                 except Exception as exc:
@@ -1452,31 +1624,167 @@ def render_post_group_knockout_view(
             },
         )
         st.session_state["post_group_results_input"] = group_results_input.copy()
+        save_post_group_state_from_session()
 
-    if st.button(
-        "Modelar llaves con estos grupos",
-        type="primary",
-        help="Simula eliminatorias usando los resultados cargados como condicion fija.",
-    ):
+    normalized_groups: pd.DataFrame | None = None
+    group_error: str | None = None
+    try:
+        normalized_groups = normalize_group_results_update(group_results_input, df)
+    except Exception as exc:
+        group_error = str(exc)
+
+    if normalized_groups is None:
+        st.warning(
+            "Corrige la tabla de grupos para habilitar el modelado de eliminatorias. "
+            f"Detalle: {group_error}"
+        )
+    else:
+        prior_ko = st.session_state.get("post_group_knockout_results")
+        if prior_ko is None or not isinstance(prior_ko, pd.DataFrame):
+            prior_ko = pd.DataFrame(columns=["match_id", "winner"])
+        if prior_ko.empty:
+            knockout_csv_text = pd.DataFrame(columns=["match_id", "winner"]).to_csv(index=False)
+        else:
+            knockout_csv_text = dataframe_to_csv_text(prior_ko)
+
         try:
             csv_text = dataframe_to_csv_text(df)
-            group_csv_text = dataframe_to_csv_text(group_results_input)
+            group_csv_text = dataframe_to_csv_text(normalized_groups)
+            fixtures_state = build_post_group_knockout_state_cached(
+                csv_text,
+                group_csv_text,
+                knockout_csv_text,
+                params,
+            )
+            st.session_state["post_group_knockout_input"] = fixtures_state
+        except Exception as exc:
+            st.error(f"No se pudo construir el estado de eliminatorias: {exc}")
+
+    fixtures_preview = st.session_state.get("post_group_knockout_input", pd.DataFrame())
+    confirmed_count = 0
+    if isinstance(fixtures_preview, pd.DataFrame) and not fixtures_preview.empty and "winner" in fixtures_preview.columns:
+        confirmed_count = int(fixtures_preview["winner"].astype(str).str.strip().ne("").sum())
+
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Estado grupos", "Valido" if normalized_groups is not None else "Invalido")
+    s2.metric("Resultados KO cargados", str(confirmed_count))
+    s3.metric("Partidos KO totales", "31")
+
+    with st.expander("Resultados reales de eliminatorias (opcional)", expanded=False):
+        st.markdown(
+            '<div class="small-note">Registra ganadores de partidos ya jugados. El simulador fija esos resultados y vuelve a calcular probabilidades para lo que falta.</div>',
+            unsafe_allow_html=True,
+        )
+        fixtures_input = st.session_state.get("post_group_knockout_input", pd.DataFrame())
+
+        if normalized_groups is None or fixtures_input.empty:
+            st.info("Primero deja valida la tabla de grupos para habilitar este editor.")
+        else:
+            if api_key_available():
+                if st.button(
+                    "Actualizar eliminatorias con busqueda web",
+                    help="Usa OpenAI web_search para identificar partidos ya jugados y poblar sus ganadores.",
+                ):
+                    try:
+                        with st.spinner("Buscando resultados de eliminatorias con OpenAI web_search..."):
+                            updates = call_llm_knockout_results_update(model, fixtures_input)
+                        merged = fixtures_input.copy()
+                        if not updates.empty:
+                            update_map = dict(zip(updates["match_id"], updates["winner"]))
+                            merged["winner"] = merged["match_id"].map(update_map).fillna(merged["winner"])
+                        normalized_knockout = normalize_knockout_results_update(merged, fixtures_input)
+                        st.session_state["post_group_knockout_results"] = normalized_knockout
+                        save_post_group_state_from_session()
+                        st.success("Resultados de eliminatorias actualizados con busqueda web.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"No se pudieron actualizar las eliminatorias: {exc}")
+            else:
+                st.caption("OPENAI_API_KEY no detectada. Puedes cargar ganadores manualmente.")
+
+            winner_options = [""]
+            known_teams = set(fixtures_input["team_a"].astype(str).str.strip().tolist())
+            known_teams.update(fixtures_input["team_b"].astype(str).str.strip().tolist())
+            winner_options.extend(sorted(team for team in known_teams if team and not team.startswith("Ganador ")))
+
+            edited_fixtures = st.data_editor(
+                fixtures_input,
+                width="stretch",
+                num_rows="fixed",
+                key="post_group_knockout_editor",
+                disabled=["round", "match_id", "team_a", "team_b"],
+                column_config={
+                    "round": st.column_config.TextColumn("Ronda"),
+                    "match_id": st.column_config.NumberColumn("Partido"),
+                    "team_a": st.column_config.TextColumn("Equipo A"),
+                    "team_b": st.column_config.TextColumn("Equipo B"),
+                    "winner": st.column_config.SelectboxColumn(
+                        "Ganador (si ya se jugo)",
+                        options=winner_options,
+                        required=False,
+                    ),
+                },
+            )
+            st.session_state["post_group_knockout_input"] = edited_fixtures.copy()
+            save_post_group_state_from_session()
+
+            if st.button(
+                "Limpiar resultados KO cargados",
+                help="Borra los ganadores registrados para volver a simular todas las llaves pendientes.",
+            ):
+                cleared = fixtures_input.copy()
+                cleared["winner"] = ""
+                st.session_state["post_group_knockout_input"] = cleared
+                st.session_state["post_group_knockout_results"] = pd.DataFrame(columns=["match_id", "winner"])
+                save_post_group_state_from_session()
+                st.success("Se limpiaron los resultados de eliminatorias cargados.")
+                st.rerun()
+
+    if st.button(
+        "Modelar llaves con estos resultados",
+        type="primary",
+        help="Simula eliminatorias usando la tabla de grupos y, si existen, resultados reales de KO ya jugados.",
+        disabled=normalized_groups is None,
+    ):
+        try:
+            if normalized_groups is None:
+                raise ValueError(
+                    "La tabla de grupos tiene errores. Corrigela antes de modelar eliminatorias."
+                )
+
+            fixtures_for_validation = st.session_state.get("post_group_knockout_input", pd.DataFrame())
+            if fixtures_for_validation is None or fixtures_for_validation.empty:
+                knockout_results = pd.DataFrame(columns=["match_id", "winner"])
+            else:
+                knockout_results = normalize_knockout_results_update(
+                    fixtures_for_validation,
+                    fixtures_for_validation,
+                )
+
+            csv_text = dataframe_to_csv_text(df)
+            group_csv_text = dataframe_to_csv_text(normalized_groups)
+            knockout_csv_text = dataframe_to_csv_text(knockout_results)
             with st.spinner("Simulando eliminatorias desde grupos cargados..."):
                 st.session_state["post_group_projection"] = run_post_group_projection_cached(
                     csv_text,
                     group_csv_text,
+                    knockout_csv_text,
                     params,
                 )
                 st.session_state["post_group_bracket"] = run_post_group_bracket_cached(
                     csv_text,
                     group_csv_text,
+                    knockout_csv_text,
                     params,
                 )
                 st.session_state["post_group_bracket_probable"] = run_post_group_bracket_probable_cached(
                     csv_text,
                     group_csv_text,
+                    knockout_csv_text,
                     params,
                 )
+                st.session_state["post_group_knockout_results"] = knockout_results
+                save_post_group_state_from_session()
             st.success("Llaves modeladas desde los resultados de grupos cargados.")
         except Exception as exc:
             st.error(f"No se pudieron modelar las llaves: {exc}")
@@ -1572,6 +1880,11 @@ def render_app() -> None:
         help="Elige si quieres simular fase de grupos + eliminatorias, o fijar la tabla final de grupos y simular solo las llaves.",
     )
     post_group_mode = simulation_scope == "Desde resultados de grupos"
+
+    if post_group_mode:
+        st.caption("Flujo recomendado: 1) validar grupos, 2) cargar KO jugados, 3) modelar restantes.")
+    else:
+        st.caption("Flujo recomendado: ajustar ratings/parametros y ejecutar simulacion completa.")
 
     if not post_group_mode:
         if st.button("Simular torneo completo", type="primary", help="Ejecuta fase de grupos y eliminatorias con los ratings y parametros actuales."):
