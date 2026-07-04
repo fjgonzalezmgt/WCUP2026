@@ -37,28 +37,6 @@ R32_MATCHES = {
     88: (("slot", "2D"), ("slot", "2G")),
 }
 
-# Partidos oficiales calendarizados de la ronda de 32 (FIFA 2026).
-# Se usan como fuente de verdad en el flujo post-grupos cuando los 32
-# clasificados coinciden con estos cruces ya publicados.
-R32_SCHEDULED_FIXTURES_2026 = {
-    73: ("South Africa", "Canada"),
-    74: ("Germany", "Paraguay"),
-    75: ("Netherlands", "Morocco"),
-    76: ("Brazil", "Japan"),
-    77: ("France", "Sweden"),
-    78: ("Cote d'Ivoire", "Norway"),
-    79: ("Mexico", "Ecuador"),
-    80: ("England", "Congo DR"),
-    81: ("USA", "Bosnia and Herzegovina"),
-    82: ("Belgium", "Senegal"),
-    83: ("Portugal", "Croatia"),
-    84: ("Spain", "Austria"),
-    85: ("Switzerland", "Algeria"),
-    86: ("Argentina", "Cabo Verde"),
-    87: ("Colombia", "Ghana"),
-    88: ("Australia", "Egypt"),
-}
-
 ROUND_TEMPLATES = {
     "round_of_16": {
         89: (74, 77),
@@ -84,4 +62,3 @@ ROUND_TEMPLATES = {
         104: (101, 102),
     },
 }
-

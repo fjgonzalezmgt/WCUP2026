@@ -234,7 +234,10 @@ def load_post_group_state(
         ]
         for sheet in expected:
             if sheet in xl.sheet_names:
-                state[sheet] = pd.read_excel(xl, sheet_name=sheet)
+                frame = pd.read_excel(xl, sheet_name=sheet)
+                if sheet in {"knockout_input", "knockout_results"} and "winner" in frame.columns:
+                    frame["winner"] = frame["winner"].fillna("").astype(str).str.strip()
+                state[sheet] = frame
         return state if state else None
     except Exception:
         return None

@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from wcup2026.bracket import R32_MATCHES, R32_SCHEDULED_FIXTURES_2026, ROUND_TEMPLATES
+from wcup2026.bracket import R32_MATCHES, ROUND_TEMPLATES
 from wcup2026.config import GROUPS, STAGE_COLUMNS
 from wcup2026.data import prepare_teams
 from wcup2026.parameters import SimParams
@@ -814,10 +814,80 @@ def simulate_bracket_sample(df: pd.DataFrame, params: SimParams) -> pd.DataFrame
     return pd.DataFrame(rows)
 
 
+def _normalize_r32_fixture_overrides(
+    r32_fixtures: pd.DataFrame | None,
+    known_teams: set[str],
+) -> dict[int, tuple[str, str]] | None:
+    """Validar fixtures R32 externos y devolver ``match_id -> (team_a, team_b)``."""
+    if r32_fixtures is None or r32_fixtures.empty:
+        return None
+
+    required = {"match_id", "team_a", "team_b"}
+    missing = required.difference(r32_fixtures.columns)
+    if missing:
+        raise ValueError(
+            "Faltan columnas en fixtures R32: " + ", ".join(sorted(missing))
+        )
+
+    clean = r32_fixtures[["match_id", "team_a", "team_b"]].copy()
+    clean["match_id"] = pd.to_numeric(clean["match_id"], errors="coerce")
+    clean = clean.dropna(subset=["match_id"])
+    clean["match_id"] = clean["match_id"].astype(int)
+    clean = clean.loc[clean["match_id"].between(73, 88)].copy()
+    clean["team_a"] = clean["team_a"].astype(str).str.strip()
+    clean["team_b"] = clean["team_b"].astype(str).str.strip()
+    clean = clean.loc[(clean["team_a"] != "") & (clean["team_b"] != "")].copy()
+
+    duplicated = clean.loc[clean["match_id"].duplicated(), "match_id"].tolist()
+    if duplicated:
+        raise ValueError(
+            "Partidos R32 duplicados en fixtures: "
+            + ", ".join(map(str, sorted(set(duplicated))))
+        )
+
+    if clean.empty:
+        return None
+
+    expected_match_ids = set(R32_MATCHES)
+    actual_match_ids = set(clean["match_id"].tolist())
+    if actual_match_ids != expected_match_ids:
+        missing_ids = sorted(expected_match_ids - actual_match_ids)
+        extra_ids = sorted(actual_match_ids - expected_match_ids)
+        details = []
+        if missing_ids:
+            details.append("faltan " + ", ".join(map(str, missing_ids)))
+        if extra_ids:
+            details.append("sobran " + ", ".join(map(str, extra_ids)))
+        raise ValueError("Fixtures R32 incompletos: " + "; ".join(details))
+
+    unknown_teams = sorted(
+        (set(clean["team_a"]) | set(clean["team_b"])) - known_teams
+    )
+    if unknown_teams:
+        raise ValueError(
+            "Fixtures R32 incluyen equipos no encontrados en ratings: "
+            + ", ".join(unknown_teams)
+        )
+
+    duplicated_teams = clean[["team_a", "team_b"]].stack()
+    duplicated_teams = duplicated_teams.loc[duplicated_teams.duplicated()].tolist()
+    if duplicated_teams:
+        raise ValueError(
+            "Equipos repetidos en fixtures R32: "
+            + ", ".join(sorted(set(duplicated_teams)))
+        )
+
+    return {
+        int(row.match_id): (str(row.team_a), str(row.team_b))
+        for row in clean.itertuples()
+    }
+
+
 def _prepare_group_results_context(
     df: pd.DataFrame,
     group_results: pd.DataFrame,
     params: SimParams,
+    r32_fixtures: pd.DataFrame | None = None,
 ) -> tuple[
     pd.DataFrame,
     dict[str, dict[str, Any]],
@@ -840,6 +910,10 @@ def _prepare_group_results_context(
     clean = df.copy()
     clean["group"] = clean["group"].astype(str).str.upper().str.strip()
     teams = prepare_teams(clean, params)
+    fixture_overrides = _normalize_r32_fixture_overrides(
+        r32_fixtures,
+        set(clean["team"].astype(str).str.strip()),
+    )
     base_group_by_team = clean.set_index("team")["group"].to_dict()
 
     results = group_results.copy()
@@ -912,23 +986,45 @@ def _prepare_group_results_context(
             "jitter": 0.0,
         })
 
-    best_thirds = rank_thirds(thirds)[:8]
-    third_assignments = assign_third_slots(best_thirds)
+    automatic_qualifiers = {slots[f"1{group}"] for group in GROUPS}
+    automatic_qualifiers.update(slots[f"2{group}"] for group in GROUPS)
+    third_by_team = {row["team"]: row for row in thirds}
+    scheduled_r32_pairs = fixture_overrides
+    override_teams = (
+        {team for fixture in fixture_overrides.values() for team in fixture}
+        if fixture_overrides is not None
+        else set()
+    )
 
-    # Si los cruces oficiales ya calendarizados son compatibles con los
-    # 32 clasificados entregados por el usuario, se usan tal cual.
-    qualified = {slots[f"1{group}"] for group in GROUPS}
-    qualified.update(slots[f"2{group}"] for group in GROUPS)
-    qualified.update(row["team"] for row in best_thirds)
+    override_third_teams = override_teams - automatic_qualifiers
+    overrides_are_compatible = (
+        fixture_overrides is not None
+        and automatic_qualifiers.issubset(override_teams)
+        and len(override_third_teams) == 8
+        and override_third_teams.issubset(third_by_team)
+    )
 
-    scheduled_teams = {
-        team
-        for fixture in R32_SCHEDULED_FIXTURES_2026.values()
-        for team in fixture
-    }
-    scheduled_r32_pairs = None
-    if qualified == scheduled_teams:
-        scheduled_r32_pairs = dict(R32_SCHEDULED_FIXTURES_2026)
+    if overrides_are_compatible:
+        best_thirds = [
+            third_by_team[team]
+            for match_id in sorted(scheduled_r32_pairs)
+            for team in scheduled_r32_pairs[match_id]
+            if team in override_third_teams
+        ]
+        third_assignments = {
+            match_id: team
+            for match_id, fixture in scheduled_r32_pairs.items()
+            for team in fixture
+            if team in override_third_teams
+        }
+    else:
+        if fixture_overrides is not None:
+            raise ValueError(
+                "Los fixtures R32 cargados no son compatibles con los "
+                "clasificados de la tabla de grupos."
+            )
+        best_thirds = rank_thirds(thirds)[:8]
+        third_assignments = assign_third_slots(best_thirds)
 
     return clean, teams, slots, third_assignments, best_thirds, scheduled_r32_pairs
 
@@ -1027,6 +1123,7 @@ def build_knockout_state_from_group_results(
     group_results: pd.DataFrame,
     params: SimParams,
     knockout_results: pd.DataFrame | None = None,
+    r32_fixtures: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Construir estado de llaves (equipos y ganadores fijos) desde grupos.
 
@@ -1038,6 +1135,7 @@ def build_knockout_state_from_group_results(
         df,
         group_results,
         params,
+        r32_fixtures=r32_fixtures,
     )
     fixed_winners = _normalize_fixed_winners(knockout_results)
 
@@ -1101,12 +1199,14 @@ def simulate_bracket_from_group_results(
     group_results: pd.DataFrame,
     params: SimParams,
     knockout_results: pd.DataFrame | None = None,
+    r32_fixtures: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Simular una llave de eliminatorias condicionada a grupos ya jugados."""
     _clean, teams, slots, third_assignments, _best_thirds, scheduled_r32_pairs = _prepare_group_results_context(
         df,
         group_results,
         params,
+        r32_fixtures=r32_fixtures,
     )
     fixed_winners = _normalize_fixed_winners(knockout_results)
     rng = np.random.default_rng(params.seed + 1000)
@@ -1129,12 +1229,14 @@ def simulate_knockout_projection_from_group_results(
     params: SimParams,
     n: int | None = None,
     knockout_results: pd.DataFrame | None = None,
+    r32_fixtures: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Estimar probabilidades por ronda usando grupos finales como condicion fija."""
     clean, teams, slots, third_assignments, best_thirds, scheduled_r32_pairs = _prepare_group_results_context(
         df,
         group_results,
         params,
+        r32_fixtures=r32_fixtures,
     )
     fixed_winners = _normalize_fixed_winners(knockout_results)
     simulations = int(n or params.simulations)
@@ -1206,12 +1308,14 @@ def simulate_bracket_most_probable_from_group_results(
     params: SimParams,
     n: int = 1000,
     knockout_results: pd.DataFrame | None = None,
+    r32_fixtures: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Calcular la llave mas probable condicionada a resultados reales de grupos."""
     _clean, teams, slots, third_assignments, _best_thirds, scheduled_r32_pairs = _prepare_group_results_context(
         df,
         group_results,
         params,
+        r32_fixtures=r32_fixtures,
     )
     fixed_winners = _normalize_fixed_winners(knockout_results)
     rng = np.random.default_rng(params.seed + 3000)
