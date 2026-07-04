@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from wcup2026.bracket import R32_MATCHES, ROUND_TEMPLATES
+from wcup2026.bracket import R32_MATCHES, ROUND_TEMPLATES, THIRD_PLACE_COMBINATIONS
 from wcup2026.config import GROUPS, STAGE_COLUMNS
 from wcup2026.data import prepare_teams
 from wcup2026.parameters import SimParams
@@ -299,11 +299,18 @@ def assign_third_slots(best_thirds: list[dict[str, Any]]) -> dict[int, str]:
         en cada partido de la ronda de 32 que requiere un tercero.
     """
     remaining = {row["group"]: row["team"] for row in best_thirds}
+    official_mapping = THIRD_PLACE_COMBINATIONS.get(frozenset(remaining))
     third_matches = {
         match_id: spec[1][1]
         for match_id, spec in R32_MATCHES.items()
         if spec[1][0] == "third"
     }
+
+    if official_mapping is not None:
+        return {
+            match_id: remaining[group]
+            for match_id, group in official_mapping.items()
+        }
 
     ordered_matches = sorted(
         third_matches,

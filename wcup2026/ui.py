@@ -1081,12 +1081,12 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
     }
 
     if from_round == "round_of_32":
-        r32_order = [74, 77, 73, 75, 83, 84, 81, 82, 76, 78, 79, 80, 86, 88, 85, 87]
+        r32_order = [73, 76, 75, 78, 74, 77, 79, 80, 84, 83, 82, 81, 87, 86, 85, 88]
         positions = {match_id: (0, 30.0 - idx * 2.0) for idx, match_id in enumerate(r32_order)}
         positions.update({
             89: (1, 29.0), 90: (1, 25.0),
-            93: (1, 21.0), 94: (1, 17.0),
-            91: (1, 13.0), 92: (1, 9.0),
+            91: (1, 21.0), 92: (1, 17.0),
+            93: (1, 13.0), 94: (1, 9.0),
             95: (1, 5.0), 96: (1, 1.0),
             97: (2, 27.0), 98: (2, 19.0),
             99: (2, 11.0), 100: (2, 3.0),
@@ -1123,8 +1123,8 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
     else:
         positions = {
             89: (0, 14.0), 90: (0, 12.0),
-            93: (0, 10.0), 94: (0, 8.0),
-            91: (0, 6.0),  92: (0, 4.0),
+            91: (0, 10.0), 92: (0, 8.0),
+            93: (0, 6.0),  94: (0, 4.0),
             95: (0, 2.0),  96: (0, 0.0),
             97: (1, 13.0), 98: (1, 9.0),
             99: (1, 5.0),  100: (1, 1.0),
@@ -1140,12 +1140,12 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
         font_size = 9
 
     parents = {
-        89: (74, 77), 90: (73, 75),
-        91: (76, 78), 92: (79, 80),
-        93: (83, 84), 94: (81, 82),
-        95: (86, 88), 96: (85, 87),
-        97: (89, 90), 98: (93, 94),
-        99: (91, 92), 100: (95, 96),
+        89: (73, 76), 90: (75, 78),
+        91: (74, 77), 92: (79, 80),
+        93: (84, 83), 94: (82, 81),
+        95: (87, 86), 96: (85, 88),
+        97: (89, 90), 98: (91, 92),
+        99: (93, 94), 100: (95, 96),
         101: (97, 98), 102: (99, 100),
         104: (101, 102),
     }
@@ -1305,9 +1305,12 @@ def render_bracket_view(
     bracket: pd.DataFrame | None,
     bracket_probable: pd.DataFrame | None,
     *,
+    actual_bracket: pd.DataFrame | None = None,
     empty_message: str | None = None,
+    actual_label: str = "Resultados reales cargados",
     probable_label: str = "Mas probable (1000 sim.)",
     sample_label: str = "Una simulacion",
+    actual_caption: str | None = None,
     probable_caption: str | None = None,
     sample_caption: str | None = None,
 ) -> None:
@@ -1326,7 +1329,7 @@ def render_bracket_view(
     bracket_probable : pd.DataFrame or None
         Cuadro mas probable calculado sobre N simulaciones.
     """
-    any_data = bracket is not None or bracket_probable is not None
+    any_data = actual_bracket is not None or bracket is not None or bracket_probable is not None
     if not any_data:
         st.info(
             empty_message
@@ -1338,6 +1341,8 @@ def render_bracket_view(
     col_mode, col_round = st.columns([2, 2])
     with col_mode:
         mode_options = []
+        if actual_bracket is not None:
+            mode_options.append(actual_label)
         if bracket_probable is not None:
             mode_options.append(probable_label)
         if bracket is not None:
@@ -1356,7 +1361,13 @@ def render_bracket_view(
         "Octavos de Final": "round_of_16",
         "Cuartos de Final": "quarterfinal",
     }[start_round]
-    if mode == probable_label:
+    if mode == actual_label:
+        active = actual_bracket
+        st.caption(
+            actual_caption
+            or "Estado real cargado desde grupos y eliminatorias editadas. Los ganadores confirmados aparecen en verde; los cruces futuros se muestran como TBD o Ganador N cuando aun no estan definidos."
+        )
+    elif mode == probable_label:
         active = bracket_probable
         st.caption(
             probable_caption
@@ -2047,12 +2058,18 @@ def render_app() -> None:
             render_probability_view(results)
     with tab_bracket:
         if post_group_mode:
+            real_bracket = st.session_state.get("post_group_knockout_input")
+            if not isinstance(real_bracket, pd.DataFrame) or real_bracket.empty:
+                real_bracket = None
             render_bracket_view(
                 bracket,
                 bracket_probable,
+                actual_bracket=real_bracket,
                 empty_message="Carga los resultados de grupos y pulsa **Modelar llaves con estos grupos** para generar el cuadro de eliminacion.",
+                actual_label="Resultados reales cargados",
                 probable_label="Mas probable post-grupos",
                 sample_label="Una simulacion post-grupos",
+                actual_caption="Cuadro real cargado desde `post_group_state.xlsx` y/o la edicion manual de eliminatorias. Esta vista no inventa resultados: solo muestra lo que ya esta definido y propaga los ganadores confirmados.",
                 probable_caption="Cuadro mas probable condicionado a los resultados de grupos cargados.",
                 sample_caption="Simulacion representativa condicionada a los resultados de grupos cargados.",
             )
