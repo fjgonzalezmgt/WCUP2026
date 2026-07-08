@@ -507,11 +507,17 @@ def call_llm_knockout_results_update(model: str, fixtures: pd.DataFrame) -> pd.D
             + ", ".join(sorted(missing))
         )
 
-    valid_rows = fixtures[list(required)].copy()
+    fixture_columns = ["match_id", "round", "team_a", "team_b"]
+    if "winner" in fixtures.columns:
+        fixture_columns.append("winner")
+    valid_rows = fixtures[fixture_columns].copy()
     valid_rows["match_id"] = pd.to_numeric(valid_rows["match_id"], errors="coerce").fillna(0).astype(int)
     valid_rows["round"] = valid_rows["round"].astype(str).str.strip()
     valid_rows["team_a"] = valid_rows["team_a"].astype(str).str.strip()
     valid_rows["team_b"] = valid_rows["team_b"].astype(str).str.strip()
+    if "winner" in valid_rows.columns:
+        valid_rows["winner"] = valid_rows["winner"].where(valid_rows["winner"].notna(), "")
+        valid_rows["winner"] = valid_rows["winner"].astype(str).str.strip()
     valid_rows = valid_rows.sort_values("match_id")
 
     schema_example = json.dumps(
@@ -527,15 +533,21 @@ def call_llm_knockout_results_update(model: str, fixtures: pd.DataFrame) -> pd.D
     )
 
     prompt = (
-        f"Fecha de consulta: {date.today().isoformat()}.\n"
+        f"Fecha de consulta: {date.today().isoformat()} en America/Guatemala.\n"
         "Busca resultados oficiales/confirmados de las rondas eliminatorias del Mundial FIFA 2026.\n"
-        "Debes usar UNICAMENTE los partidos/equipos de esta tabla de llaves:\n"
+        "Prioriza resultados publicados o actualizados hoy y en las ultimas 24 horas; "
+        "no te quedes con previas, calendarios ni marcadores antiguos si ya hay un resultado final.\n"
+        "Debes usar UNICAMENTE los partidos/equipos de esta tabla de llaves. "
+        "Si la tabla ya trae ganadores en la columna winner, usalos para interpretar "
+        "los cruces de la siguiente fase y busca tambien esos partidos derivados:\n"
         f"{json.dumps(valid_rows.to_dict(orient='records'), ensure_ascii=False)}\n\n"
         "Devuelve SOLO JSON valido con este esquema exacto:\n"
         f"{schema_example}\n\n"
         "Reglas estrictas:\n"
-        "- Incluye solo partidos ya jugados y con ganador confirmado.\n"
+        "- Revisa FIFA.com primero y luego fuentes deportivas confiables con hora/fecha reciente.\n"
+        "- Incluye solo partidos ya jugados y con ganador confirmado, incluyendo partidos jugados hoy.\n"
         "- winner debe ser exactamente team_a o team_b del match_id correspondiente.\n"
+        "- Si team_a/team_b ya son equipos concretos, busca ese cruce especifico por ambos nombres.\n"
         "- Si un partido no esta jugado o no hay confirmacion fiable, NO lo incluyas.\n"
         "- No inventes partidos, no inventes equipos, no cambies nombres.\n"
         "- No incluyas texto fuera del JSON."

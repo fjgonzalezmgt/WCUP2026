@@ -22,6 +22,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 from dotenv import load_dotenv
 
+from wcup2026.bracket import ROUND_TEMPLATES
 from wcup2026.config import (
     APP_CAPTION,
     APP_TITLE,
@@ -367,6 +368,39 @@ def build_post_group_knockout_state_cached(
         params,
         knockout_results=knockout_results,
         r32_fixtures=knockout_input,
+    )
+
+
+def rebuild_post_group_knockout_state(
+    df: pd.DataFrame,
+    group_results: pd.DataFrame,
+    knockout_results: pd.DataFrame,
+    knockout_input: pd.DataFrame,
+    params: SimParams,
+) -> pd.DataFrame:
+    """Reconstruir fixtures KO propagando ganadores confirmados."""
+    fixture_columns = ["match_id", "team_a", "team_b"]
+    result_columns = ["match_id", "winner"]
+    fixture_override = (
+        knockout_input.copy()
+        if isinstance(knockout_input, pd.DataFrame)
+        else pd.DataFrame(columns=fixture_columns)
+    )
+    fixed_results = (
+        knockout_results.copy()
+        if isinstance(knockout_results, pd.DataFrame)
+        else pd.DataFrame(columns=result_columns)
+    )
+    if fixture_override.empty and not set(fixture_columns).issubset(fixture_override.columns):
+        fixture_override = pd.DataFrame(columns=fixture_columns)
+    if fixed_results.empty and not set(result_columns).issubset(fixed_results.columns):
+        fixed_results = pd.DataFrame(columns=result_columns)
+    return build_post_group_knockout_state_cached(
+        dataframe_to_csv_text(df),
+        dataframe_to_csv_text(group_results),
+        dataframe_to_csv_text(fixed_results),
+        dataframe_to_csv_text(fixture_override),
+        params,
     )
 
 
@@ -1473,7 +1507,7 @@ def normalize_knockout_results_update(update: pd.DataFrame, fixtures: pd.DataFra
     clean["match_id"] = clean["match_id"].astype(int)
     clean["winner"] = clean["winner"].where(clean["winner"].notna(), "")
     clean["winner"] = clean["winner"].astype(str).str.strip()
-    clean = clean.loc[~clean["winner"].isin(["", "nan", "None"])] .copy()
+    clean = clean.loc[~clean["winner"].isin(["", "nan", "None"])].copy()
 
     duplicated = clean.loc[clean["match_id"].duplicated(), "match_id"].tolist()
     if duplicated:
@@ -1489,6 +1523,39 @@ def normalize_knockout_results_update(update: pd.DataFrame, fixtures: pd.DataFra
         .set_index("match_id")
         .to_dict(orient="index")
     )
+    round_parents = {
+        match_id: parent_ids
+        for matches in ROUND_TEMPLATES.values()
+        for match_id, parent_ids in matches.items()
+    }
+    winners_by_match = dict(zip(clean["match_id"].tolist(), clean["winner"].tolist()))
+    resolved_winners: dict[int, str] = {}
+    resolved_fixture_map: dict[int, dict[str, str]] = {}
+
+    def is_placeholder(value: object) -> bool:
+        return str(value).strip().startswith("Ganador ")
+
+    for match_id in sorted(fixture_map):
+        raw = fixture_map[match_id]
+        raw_a = str(raw["team_a"]).strip()
+        raw_b = str(raw["team_b"]).strip()
+        if match_id in round_parents:
+            left_id, right_id = round_parents[match_id]
+            team_a = resolved_winners.get(left_id, raw_a)
+            team_b = resolved_winners.get(right_id, raw_b)
+        else:
+            team_a = raw_a
+            team_b = raw_b
+
+        resolved_fixture_map[match_id] = {"team_a": team_a, "team_b": team_b}
+        winner = winners_by_match.get(match_id)
+        if (
+            winner
+            and not is_placeholder(team_a)
+            and not is_placeholder(team_b)
+            and winner in {team_a, team_b}
+        ):
+            resolved_winners[match_id] = winner
 
     unknown_matches = sorted(set(clean["match_id"]) - set(fixture_map))
     if unknown_matches:
@@ -1498,10 +1565,10 @@ def normalize_knockout_results_update(update: pd.DataFrame, fixtures: pd.DataFra
 
     errors: list[str] = []
     for row in clean.itertuples():
-        fixture = fixture_map[row.match_id]
+        fixture = resolved_fixture_map[row.match_id]
         team_a = str(fixture["team_a"]).strip()
         team_b = str(fixture["team_b"]).strip()
-        if team_a.startswith("Ganador ") or team_b.startswith("Ganador "):
+        if is_placeholder(team_a) or is_placeholder(team_b):
             errors.append(
                 f"Partido {row.match_id}: aun no se conocen ambos rivales ({team_a} vs {team_b})."
             )
@@ -1727,20 +1794,16 @@ def render_post_group_knockout_view(
             knockout_csv_text = dataframe_to_csv_text(prior_ko)
 
         try:
-            if saved_post_group_state is not None and "knockout_input" in saved_post_group_state:
-                fixtures_state = saved_post_group_state["knockout_input"].copy()
-            else:
-                csv_text = dataframe_to_csv_text(df)
-                group_csv_text = dataframe_to_csv_text(normalized_groups)
+            fixture_override_input = st.session_state.get("post_group_knockout_input", pd.DataFrame())
+            if not isinstance(fixture_override_input, pd.DataFrame):
                 fixture_override_input = pd.DataFrame(columns=["match_id", "team_a", "team_b"])
-                fixture_override_csv_text = dataframe_to_csv_text(fixture_override_input)
-                fixtures_state = build_post_group_knockout_state_cached(
-                    csv_text,
-                    group_csv_text,
-                    knockout_csv_text,
-                    fixture_override_csv_text,
-                    params,
-                )
+            fixtures_state = rebuild_post_group_knockout_state(
+                df,
+                normalized_groups,
+                dataframe_from_csv_text(knockout_csv_text),
+                fixture_override_input,
+                params,
+            )
             st.session_state["post_group_knockout_input"] = fixtures_state
         except Exception as exc:
             st.error(f"No se pudo construir el estado de eliminatorias: {exc}")
@@ -1772,13 +1835,31 @@ def render_post_group_knockout_view(
                 ):
                     try:
                         with st.spinner("Buscando resultados de eliminatorias con OpenAI web_search..."):
-                            updates = call_llm_knockout_results_update(model, fixtures_input)
-                        merged = fixtures_input.copy()
+                            current_knockout = normalize_knockout_results_update(fixtures_input, fixtures_input)
+                            try:
+                                fixtures_for_search = rebuild_post_group_knockout_state(
+                                    df,
+                                    normalized_groups,
+                                    current_knockout,
+                                    fixtures_input,
+                                    params,
+                                )
+                            except ValueError:
+                                fixtures_for_search = fixtures_input
+                            updates = call_llm_knockout_results_update(model, fixtures_for_search)
+                        merged = fixtures_for_search.copy()
                         if not updates.empty:
                             update_map = dict(zip(updates["match_id"], updates["winner"]))
                             merged["winner"] = merged["match_id"].map(update_map).fillna(merged["winner"])
-                        normalized_knockout = normalize_knockout_results_update(merged, fixtures_input)
-                        st.session_state["post_group_knockout_input"] = merged
+                        normalized_knockout = normalize_knockout_results_update(merged, fixtures_for_search)
+                        rebuilt_fixtures = rebuild_post_group_knockout_state(
+                            df,
+                            normalized_groups,
+                            normalized_knockout,
+                            merged,
+                            params,
+                        )
+                        st.session_state["post_group_knockout_input"] = rebuilt_fixtures
                         st.session_state["post_group_knockout_results"] = normalized_knockout
                         clear_post_group_outputs()
                         save_post_group_state_from_session()
@@ -1813,6 +1894,13 @@ def render_post_group_knockout_view(
                 },
             )
             st.session_state["post_group_knockout_input"] = edited_fixtures.copy()
+            try:
+                st.session_state["post_group_knockout_results"] = normalize_knockout_results_update(
+                    edited_fixtures,
+                    edited_fixtures,
+                )
+            except Exception:
+                pass
 
             if st.button(
                 "Limpiar resultados KO cargados",
@@ -1842,9 +1930,18 @@ def render_post_group_knockout_view(
                     fixtures_to_save,
                     fixtures_to_save,
                 )
+            rebuilt_fixtures = rebuild_post_group_knockout_state(
+                df,
+                normalized_groups,
+                knockout_results_to_save,
+                fixtures_to_save,
+                params,
+            )
+            st.session_state["post_group_knockout_input"] = rebuilt_fixtures
             st.session_state["post_group_knockout_results"] = knockout_results_to_save
             save_post_group_state_from_session()
             st.success(f"Estado post-grupos guardado en {POST_GROUP_STATE_PATH}.")
+            st.rerun()
         except Exception as exc:
             st.error(f"No se pudo guardar el estado post-grupos: {exc}")
 
@@ -1868,16 +1965,18 @@ def render_post_group_knockout_view(
                     fixtures_for_validation,
                     fixtures_for_validation,
                 )
+            fixtures_for_model = rebuild_post_group_knockout_state(
+                df,
+                normalized_groups,
+                knockout_results,
+                fixtures_for_validation,
+                params,
+            )
 
             csv_text = dataframe_to_csv_text(df)
             group_csv_text = dataframe_to_csv_text(normalized_groups)
             knockout_csv_text = dataframe_to_csv_text(knockout_results)
-            if saved_post_group_state is not None:
-                fixture_override_csv_text = dataframe_to_csv_text(fixtures_for_validation)
-            else:
-                fixture_override_csv_text = dataframe_to_csv_text(
-                    pd.DataFrame(columns=["match_id", "team_a", "team_b"])
-                )
+            fixture_override_csv_text = dataframe_to_csv_text(fixtures_for_model)
             with st.spinner("Simulando eliminatorias desde grupos cargados..."):
                 st.session_state["post_group_projection"] = run_post_group_projection_cached(
                     csv_text,
@@ -1901,6 +2000,7 @@ def render_post_group_knockout_view(
                     params,
                 )
                 st.session_state["post_group_knockout_results"] = knockout_results
+                st.session_state["post_group_knockout_input"] = fixtures_for_model
             st.success("Llaves modeladas desde los resultados de grupos cargados.")
         except Exception as exc:
             st.error(f"No se pudieron modelar las llaves: {exc}")
