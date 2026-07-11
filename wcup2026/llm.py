@@ -37,6 +37,8 @@ LLM_INSTRUCTIONS = (
     "escenarios cerrados."
 )
 
+OPENAI_MODEL = "gpt-5.6-luna"
+
 
 def _extract_response_text(response: Any) -> str:
     """Obtener texto legible de una respuesta de OpenAI Responses API.
@@ -88,17 +90,17 @@ def api_key_available() -> bool:
 
 
 def default_model() -> str:
-    """Obtener el nombre del modelo OpenAI configurado.
+    """Obtener el modelo OpenAI unico de la aplicacion.
 
-    Lee la variable de entorno ``OPENAI_MODEL``; si no esta definida
-    devuelve ``"gpt-5"`` como valor predeterminado.
+    El modelo se fija en codigo para que todas las acciones de IA usen la
+    misma version y no puedan divergir por configuracion local o de sesion.
 
     Returns
     -------
     str
         Nombre del modelo OpenAI a usar en las llamadas a la API.
     """
-    return os.getenv("OPENAI_MODEL", "gpt-5.5")
+    return OPENAI_MODEL
 
 
 def build_analysis_payload(
@@ -603,7 +605,7 @@ def call_llm_analysis(model: str, payload: dict[str, Any]) -> str:
     Parameters
     ----------
     model : str
-        Nombre del modelo OpenAI (p.ej. ``"gpt-5"`` o ``"gpt-4o"``).
+        Nombre del modelo OpenAI (``"gpt-5.6-luna"`` en esta aplicacion).
     payload : dict[str, Any]
         Payload construido con ``build_analysis_payload``.
 

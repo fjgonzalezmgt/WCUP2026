@@ -544,7 +544,8 @@ def render_sidebar() -> tuple[SimParams, str]:
     balance_weight = st.sidebar.slider("Ataque + defensa", 0.0, 1.0, 0.15, step=0.05, help="Peso del balance tactico (ataque vs defensa). Equipos con ratings altos en ambos extremos son mas solidos.")
 
     st.sidebar.header("LLM")
-    model = st.sidebar.text_input("Modelo OpenAI", value=default_model(), help="Nombre del modelo de OpenAI a usar para el analisis cualitativo y busqueda de noticias. Ej: gpt-4o, gpt-5.5.")
+    model = default_model()
+    st.sidebar.caption(f"Modelo OpenAI: {model}")
     key_status = "detectada" if api_key_available() else "no detectada"
     st.sidebar.caption(f"OPENAI_API_KEY: {key_status}")
 

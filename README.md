@@ -405,7 +405,7 @@ conda activate wcup2026
 # 3. Crear el archivo de variables de entorno
 # Crea un archivo .env en la raíz con el siguiente contenido:
 #   OPENAI_API_KEY=tu_clave_aqui
-#   OPENAI_MODEL=gpt-5   # opcional; default: gpt-5.5
+# Todas las acciones de IA usan gpt-5.6-luna (fijado en la aplicacion).
 
 # 4. Lanzar la app
 streamlit run app.py
