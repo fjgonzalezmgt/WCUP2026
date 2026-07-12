@@ -888,6 +888,7 @@ def render_llm_view(
     df: pd.DataFrame,
     model: str,
     bracket_probable: pd.DataFrame | None = None,
+    knockout_state: pd.DataFrame | None = None,
 ) -> None:
     """Renderizar la pestana de integracion LLM.
 
@@ -913,7 +914,11 @@ def render_llm_view(
     if st.button("Buscar noticias", help="Consulta al LLM por lesiones y contexto relevante de los equipos"):
         try:
             with st.spinner("Buscando noticias relevantes..."):
-                st.session_state["llm_notes"] = call_llm_news_search(model, df)
+                st.session_state["llm_notes"] = call_llm_news_search(
+                    model,
+                    df,
+                    knockout_state=knockout_state,
+                )
         except Exception as exc:  # pragma: no cover - UI guardrail
             st.error(f"No se pudo obtener noticias: {exc}")
 
@@ -2191,10 +2196,19 @@ def render_app() -> None:
     with tab_model:
         render_model_view()
     with tab_llm:
+        news_knockout_state = None
+        if post_group_mode:
+            candidate_state = st.session_state.get("post_group_knockout_input")
+            if isinstance(candidate_state, pd.DataFrame):
+                news_knockout_state = candidate_state
         if results is None:
-            render_llm_view(None, sim_df, llm_model, bracket_probable)
+            render_llm_view(
+                None, sim_df, llm_model, bracket_probable, news_knockout_state
+            )
         else:
-            render_llm_view(results, sim_df, llm_model, bracket_probable)
+            render_llm_view(
+                results, sim_df, llm_model, bracket_probable, news_knockout_state
+            )
     with tab_eval:
         render_evaluation_view()
     with tab_report:

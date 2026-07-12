@@ -186,7 +186,34 @@ def build_analysis_payload(
     return payload
 
 
-def call_llm_news_search(model: str, teams: pd.DataFrame) -> str:
+def _surviving_teams_from_knockout_state(
+    teams: pd.DataFrame,
+    knockout_state: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Excluir equipos eliminados segun los resultados KO ya confirmados."""
+    if knockout_state is None or knockout_state.empty:
+        return teams.copy()
+
+    required = ["team_a", "team_b", "winner"]
+    if not set(required).issubset(knockout_state.columns):
+        return teams.copy()
+
+    eliminated: set[str] = set()
+    for row in knockout_state[required].itertuples(index=False):
+        team_a = str(row.team_a).strip()
+        team_b = str(row.team_b).strip()
+        winner = str(row.winner).strip()
+        if winner and winner.lower() != "nan" and winner in {team_a, team_b}:
+            eliminated.add(team_b if winner == team_a else team_a)
+
+    return teams.loc[~teams["team"].isin(eliminated)].copy()
+
+
+def call_llm_news_search(
+    model: str,
+    teams: pd.DataFrame,
+    knockout_state: pd.DataFrame | None = None,
+) -> str:
     """Usar el LLM para generar un resumen de noticias de lesiones y contexto relevante.
 
     Parameters
@@ -195,6 +222,9 @@ def call_llm_news_search(model: str, teams: pd.DataFrame) -> str:
         Nombre del modelo OpenAI.
     teams : pd.DataFrame
         DataFrame con los equipos participantes.
+    knockout_state : pd.DataFrame, optional
+        Estado real de las eliminatorias. Sus perdedores confirmados se
+        excluyen antes de construir la consulta.
 
     Returns
     -------
@@ -204,17 +234,24 @@ def call_llm_news_search(model: str, teams: pd.DataFrame) -> str:
     from openai import OpenAI
 
     client = OpenAI()
-    if "overall" in teams.columns:
-        focus_teams = teams.sort_values("overall", ascending=False).head(18)
+    surviving_teams = _surviving_teams_from_knockout_state(teams, knockout_state)
+    if "overall" in surviving_teams.columns:
+        focus_teams = surviving_teams.sort_values("overall", ascending=False).head(18)
     else:
-        focus_teams = teams.head(18)
+        focus_teams = surviving_teams.head(18)
 
     team_list = ", ".join(focus_teams["team"].tolist())
     all_teams = ", ".join(teams["team"].tolist())
+    known_survivors = ", ".join(surviving_teams["team"].tolist())
     prompt = (
         f"Fecha de consulta: {date.today().isoformat()}.\n"
         f"Selecciones participantes en el Mundial 2026: {all_teams}.\n"
-        f"Prioriza estas selecciones por rating/favoritismo del modelo: {team_list}.\n\n"
+        f"Equipos que siguen vivos segun los resultados cargados: {known_survivors}.\n"
+        f"Entre ellos, prioriza por rating/favoritismo del modelo: {team_list}.\n\n"
+        "Primero verifica con fuentes fiables y resultados actualizados cuales de esas "
+        "selecciones siguen vivas en el torneo en la fecha de consulta. Considera vivo a "
+        "un equipo mientras conserve posibilidades de avanzar o no haya sido eliminado. "
+        "No incluyas noticias de selecciones ya eliminadas. "
         "Busca en internet noticias recientes y relevantes para el Mundial 2026 sobre "
         "lesiones, bajas, suspensiones, convocatorias, minutos recientes, racha de forma "
         "y contexto competitivo de los principales favoritos al titulo. "
