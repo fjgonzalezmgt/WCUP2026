@@ -258,6 +258,7 @@ flowchart TD
         R32["Ronda de 32\n(16 partidos)"] --> R16["Ronda de 16\n(8 partidos)"]
         R16 --> QF["Cuartos de final\n(4 partidos)"]
         QF --> SF["Semifinales\n(2 partidos)"]
+        SF --> THIRD_PLACE["Tercer lugar\n(1 partido)"]
         SF --> FIN["Final\n(1 partido)"]
     end
 
@@ -358,6 +359,7 @@ flowchart LR
         M101["101"] & M102["102"]
     end
 
+    THIRD_PLACE["103\nTercer lugar"]
     FIN["104\nFinal"]
     CHAMP(["🏆 Campeón"])
 
@@ -376,11 +378,13 @@ flowchart LR
     M95 & M96 --> M100
     M97 & M98 --> M101
     M99 & M100 --> M102
+    M101 & M102 -->|Perdedores| THIRD_PLACE
     M101 & M102 --> FIN
     FIN --> CHAMP
 
     style CHAMP fill:#0b8043,color:#fff
     style FIN fill:#e03030,color:#fff
+    style THIRD_PLACE fill:#b7791f,color:#fff
 ```
 
 ---
@@ -420,7 +424,7 @@ streamlit run app.py
 - **48 equipos** distribuidos en **12 grupos** según el sorteo FIFA 2026.
 - Clasifican los **dos primeros de cada grupo** más los **ocho mejores terceros**.
 - **Ronda de 32** construida siguiendo el calendario oficial FIFA.
-- Probabilidades calculadas por ronda: Fase de grupos → Ronda de 32 → Octavos → Cuartos → Semifinal → Final → Campeón.
+- Probabilidades calculadas por ronda: Fase de grupos → Ronda de 32 → Octavos → Cuartos → Semifinal → Final → Campeón, más la probabilidad específica de ganar el partido por el tercer lugar.
 - En modo **Desde resultados de grupos**, la fase de grupos se trata como observada/fija y las probabilidades se recalculan solo para Ronda de 32 → Octavos → Cuartos → Semifinal → Final → Campeón.
 
 ---

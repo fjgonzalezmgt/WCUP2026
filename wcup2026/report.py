@@ -42,7 +42,8 @@ BRACKET_ROUND_ORDER = {
     "round_of_16": 1,
     "quarterfinal": 2,
     "semifinal": 3,
-    "final": 4,
+    "third_place": 4,
+    "final": 5,
 }
 
 BRACKET_ROUND_LABELS = {
@@ -50,6 +51,7 @@ BRACKET_ROUND_LABELS = {
     "round_of_16": "Octavos",
     "quarterfinal": "Cuartos",
     "semifinal": "Semifinal",
+    "third_place": "Tercer lugar",
     "final": "Final",
 }
 
@@ -219,17 +221,30 @@ def build_summary(results: pd.DataFrame, params: SimParams | None) -> str:
         Parrafo de texto plano listo para insertarse en el reporte.
     """
     favorite = results.iloc[0]
+    third_place_favorite = (
+        results.sort_values("third_place_pct", ascending=False).iloc[0]
+        if "third_place_pct" in results.columns
+        else None
+    )
     simulations = getattr(params, "simulations", None)
     if simulations:
         simulation_text = f"{simulations:,}".replace(",", ".") + " torneos"
     else:
         simulation_text = "la ultima simulacion guardada"
+    third_place_text = ""
+    if third_place_favorite is not None:
+        third_place_text = (
+            f" La mayor probabilidad de terminar en tercer lugar corresponde a "
+            f"{third_place_favorite['team']} con "
+            f"{float(third_place_favorite['third_place_pct']):.1f}%."
+        )
     return (
         f"La simulacion Monte Carlo evaluo {simulation_text}. "
         f"El favorito del modelo es {favorite['team']} con "
         f"{float(favorite['champion_pct']):.1f}% de probabilidad de campeon, "
         f"{float(favorite['final_pct']):.1f}% de probabilidad de final y un rating "
         f"compuesto de {float(favorite['overall']):.1f}."
+        + third_place_text
     )
 
 
@@ -251,11 +266,20 @@ def build_kpi_strip(results: pd.DataFrame) -> str:
     """
     favorite = results.iloc[0]
     second = results.iloc[1] if len(results) > 1 else favorite
+    third_place_favorite = (
+        results.sort_values("third_place_pct", ascending=False).iloc[0]
+        if "third_place_pct" in results.columns
+        else favorite
+    )
     cards = [
         ("Favorito", favorite["team"], _format_pct(favorite["champion_pct"])),
         ("Final", favorite["team"], _format_pct(favorite["final_pct"])),
         ("Perseguidor", second["team"], _format_pct(second["champion_pct"])),
-        ("Rating lider", favorite["team"], f"{float(favorite['overall']):.1f}"),
+        (
+            "Tercer lugar",
+            third_place_favorite["team"],
+            _format_pct(third_place_favorite.get("third_place_pct", 0.0)),
+        ),
     ]
     rows = [
         r"\begin{center}",
@@ -317,8 +341,8 @@ def build_champion_chart(results: pd.DataFrame, limit: int = 10) -> str:
 def build_top_table(results: pd.DataFrame, limit: int = 12) -> str:
     """Crear la tabla LaTeX con los principales favoritos al titulo.
 
-    La tabla incluye columnas de seleccion, rating, semifinal, final y
-    campeon con filas alternadas y encabezado azul.
+    La tabla incluye columnas de seleccion, rating, semifinal, tercer lugar,
+    final y campeon con filas alternadas y encabezado azul.
 
     Parameters
     ----------
@@ -334,9 +358,9 @@ def build_top_table(results: pd.DataFrame, limit: int = 12) -> str:
     """
     rows = [
         r"\rowcolors{2}{qasoft}{white}",
-        r"\begin{tabular}{p{0.28\linewidth}rrrr}",
+        r"\begin{tabular}{p{0.23\linewidth}rrrrr}",
         r"\rowcolor{qablue}",
-        r"\textcolor{white}{\textbf{Seleccion}} & \textcolor{white}{\textbf{Rating}} & \textcolor{white}{\textbf{Semifinal}} & \textcolor{white}{\textbf{Final}} & \textcolor{white}{\textbf{Campeon}} \\",
+        r"\textcolor{white}{\textbf{Seleccion}} & \textcolor{white}{\textbf{Rating}} & \textcolor{white}{\textbf{Semifinal}} & \textcolor{white}{\textbf{3.er lugar}} & \textcolor{white}{\textbf{Final}} & \textcolor{white}{\textbf{Campeon}} \\",
     ]
     for _, row in results.head(limit).iterrows():
         rows.append(
@@ -345,6 +369,7 @@ def build_top_table(results: pd.DataFrame, limit: int = 12) -> str:
                     latex_escape(row["team"]),
                     f"{float(row['overall']):.1f}",
                     _format_pct(row["semifinal_pct"]),
+                    _format_pct(row.get("third_place_pct", 0.0)),
                     _format_pct(row["final_pct"]),
                     _format_pct(row["champion_pct"]),
                 ]
@@ -536,7 +561,7 @@ def build_bracket_visual(bracket_probable: pd.DataFrame | None) -> str:
     if not required.issubset(bracket_probable.columns):
         return r"\qaempty{El bracket guardado no tiene las columnas esperadas.}"
 
-    late = {"quarterfinal", "semifinal", "final"}
+    late = {"quarterfinal", "semifinal", "third_place", "final"}
     bp = bracket_probable[bracket_probable["round"].isin(late)].copy()
     if bp.empty:
         return r"\qaempty{No hay datos de bracket disponibles.}"
@@ -546,11 +571,13 @@ def build_bracket_visual(bracket_probable: pd.DataFrame | None) -> str:
 
     qf = bp[bp["round"] == "quarterfinal"].reset_index(drop=True)
     sf = bp[bp["round"] == "semifinal"].reset_index(drop=True)
+    tp = bp[bp["round"] == "third_place"].reset_index(drop=True)
     fi = bp[bp["round"] == "final"].reset_index(drop=True)
 
     xpos_qf = [0.0, 3.2, 6.4, 9.6]
     xpos_sf = [1.6, 8.0]
-    xpos_fi = [4.8]
+    xpos_tp = [2.8]
+    xpos_fi = [6.8]
 
     y_qf = 0.0
     y_sf = -2.2
@@ -610,6 +637,7 @@ def build_bracket_visual(bracket_probable: pd.DataFrame | None) -> str:
 
     for _, row in fi.iterrows():
         x = xpos_fi[0]
+        lines.append(rf"\node[text=qablue, font=\bfseries] at ({x:.2f},{y_fi + 1.05:.2f}) {{Final}};")
         lines += match_node(x, y_fi, str(row["team_a"]), str(row["team_b"]), str(row["winner"]), row.get("winner_pct"))
         for sx, _ in sf_centers:
             lines.append(
@@ -619,6 +647,18 @@ def build_bracket_visual(bracket_probable: pd.DataFrame | None) -> str:
                 rf"({x:.2f},{y_fi + gap / 2 + node_h:.2f});"
             )
 
+    for _, row in tp.iterrows():
+        x = xpos_tp[0]
+        lines.append(rf"\node[text=qablue, font=\bfseries] at ({x:.2f},{y_fi + 1.05:.2f}) {{3.er lugar}};")
+        lines += match_node(
+            x,
+            y_fi,
+            str(row["team_a"]),
+            str(row["team_b"]),
+            str(row["winner"]),
+            row.get("winner_pct"),
+        )
+
     lines += [r"\end{tikzpicture}", r"\end{center}"]
     return "\n".join(lines)
 
@@ -626,8 +666,8 @@ def build_bracket_visual(bracket_probable: pd.DataFrame | None) -> str:
 def build_bracket_chart(bracket_probable: pd.DataFrame) -> str:
     """Crear una tabla ordenada con todo el bracket mas probable.
 
-    Muestra cada cruce desde ronda de 32 hasta la final, ordenado por etapa
-    y con el numero oficial FIFA del partido.  El ganador probable se
+    Muestra cada cruce desde ronda de 32, incluido el tercer lugar, hasta la
+    final, ordenado por etapa y con el numero oficial FIFA. El ganador probable se
     resalta dentro de la llave y se incluye su porcentaje estimado cuando
     esta disponible.
 

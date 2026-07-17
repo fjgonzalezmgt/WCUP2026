@@ -37,6 +37,7 @@ STAGE_COLUMNS = [
     "quarterfinal",
     "semifinal",
     "final",
+    "third_place",
     "champion",
 ]
 

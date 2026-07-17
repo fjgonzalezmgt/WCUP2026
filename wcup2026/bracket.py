@@ -12,7 +12,8 @@ Cada entrada en ``R32_MATCHES`` es un par de referencias ``(tipo, valor)``:
 
 ``ROUND_TEMPLATES`` mapea el ID de cada partido de la ronda de 16, cuartos,
 semifinales y final a los IDs de los dos partidos cuyos ganadores se
-enfrentan.
+enfrentan. El partido por el tercer lugar se define por separado porque lo
+disputan los perdedores de las semifinales.
 """
 
 from __future__ import annotations
@@ -75,3 +76,7 @@ ROUND_TEMPLATES = {
         104: (101, 102),
     },
 }
+
+# Partido FIFA 103: perdedor de la semifinal 101 vs perdedor de la 102.
+THIRD_PLACE_MATCH_ID = 103
+THIRD_PLACE_SEMIFINALS = (101, 102)

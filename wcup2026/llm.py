@@ -31,7 +31,10 @@ LLM_INSTRUCTIONS = (
     "estadistica y luego otra separada. Despues agrega un parrafo breve que empiece "
     "exactamente con 'Conclusion firme:' y sintetice la tesis central integrada. Luego "
     "explica como llegaste ahi en secciones separadas: primero '## Lo que dice el modelo', "
-    "despues '## Ajustes cualitativos' y al final '## Escenarios'. "
+    "despues '## Ajustes cualitativos', luego una seccion obligatoria titulada "
+    "'## Partido por el tercer lugar' y al final '## Escenarios'. La seccion del tercer "
+    "lugar debe analizar el partido 103 con la misma profundidad que la final: rivales, "
+    "ganador probable, probabilidad, noticias relevantes y factores de riesgo. "
     "No recomiendes ajustes de pesos, ratings ni variables internas del modelo; "
     "traduce cualquier senal cualitativa a implicaciones deportivas concretas y "
     "escenarios cerrados."
@@ -128,7 +131,7 @@ def build_analysis_payload(
     bracket_probable : pd.DataFrame or None, optional
         Cuadro de eliminacion mas probable calculado sobre N simulaciones.
         Si se proporciona, se incluye en el payload como ``bracket_probable``
-        ordenado desde ronda de 32 hasta la final.
+        ordenado desde ronda de 32 hasta el tercer lugar y la final.
 
     Returns
     -------
@@ -137,15 +140,26 @@ def build_analysis_payload(
         ``model_results_top_12``, ``teams``, ``user_scenario``,
         ``bracket_probable`` (si aplica) y ``request``.
     """
+    result_columns = [
+        "team", "group", "overall", "round_of_32_pct", "semifinal_pct",
+        "third_place_pct", "final_pct", "champion_pct",
+    ]
+    available_result_columns = [column for column in result_columns if column in results.columns]
     payload: dict[str, Any] = {
-        "model_results_top_12": results.head(12)[
-            ["team", "group", "overall", "round_of_32_pct", "semifinal_pct", "final_pct", "champion_pct"]
-        ].round(2).to_dict(orient="records"),
+        "model_results_top_12": results.head(12)[available_result_columns]
+        .round(2).to_dict(orient="records"),
         "teams": teams[
             ["team", "group", "confederation", "attack", "defense", "squad", "form"]
         ].to_dict(orient="records"),
         "user_scenario": notes,
     }
+    if "third_place_pct" in results.columns:
+        payload["third_place_outlook"] = (
+            results.sort_values("third_place_pct", ascending=False)
+            .head(8)[available_result_columns]
+            .round(2)
+            .to_dict(orient="records")
+        )
 
     if bracket_probable is not None and not bracket_probable.empty:
         round_order = {
@@ -153,7 +167,8 @@ def build_analysis_payload(
             "round_of_16": 1,
             "quarterfinal": 2,
             "semifinal": 3,
-            "final": 4,
+            "third_place": 4,
+            "final": 5,
         }
         bp = bracket_probable.copy()
         bp["_round_order"] = bp["round"].map(round_order).fillna(99)
@@ -161,6 +176,10 @@ def build_analysis_payload(
         bp["winner_pct"] = bp["winner_pct"].where(bp["winner_pct"].notna(), other=None)
         payload["bracket_probable"] = bp[
             ["round", "match_id", "team_a", "team_b", "winner", "winner_pct"]
+        ].to_dict(orient="records")
+        payload["third_place_match"] = bp.loc[
+            pd.to_numeric(bp["match_id"], errors="coerce").eq(103),
+            ["round", "match_id", "team_a", "team_b", "winner", "winner_pct"],
         ].to_dict(orient="records")
 
     payload["request"] = (
@@ -175,12 +194,18 @@ def build_analysis_payload(
             "analisis cualitativo. "
             "Despues escribe un parrafo corto que empiece exactamente con 'Conclusion firme:' "
             "y cierre la tesis principal. Luego explica paso a paso como llegas a ese veredicto "
-            "en tres secciones: '## Lo que dice el modelo', '## Ajustes cualitativos' y "
-            "'## Escenarios'. En la ultima seccion cierra con los escenarios base, conservador "
+            "en cuatro secciones: '## Lo que dice el modelo', '## Ajustes cualitativos', "
+            "'## Partido por el tercer lugar' y '## Escenarios'. La seccion del tercer lugar es "
+            "obligatoria: identifica los rivales del partido 103, el ganador probable, su "
+            "winner_pct, la probabilidad incondicional third_place_pct y el efecto de las noticias. "
+            "Incluye ademas un bullet etiquetado 'Tercer lugar probable' dentro de '## Veredicto final'. "
+            "No sustituyas esta seccion por el analisis de la final ni la omitas aunque esos equipos "
+            "ya no puedan ser campeones. En la ultima seccion cierra con los escenarios base, conservador "
             "y optimista. "
             "Si se incluye 'bracket_probable', incorpora sus caminos al titulo en el analisis: "
-            "menciona las llaves probables desde ronda de 32, octavos, cuartos, semis y final, "
+            "menciona las llaves probables desde ronda de 32, octavos, cuartos, semis, tercer lugar y final, "
             "cuales son los duelos clave del cuadro y que tan probable es cada uno segun el porcentaje. "
+            "Dedica al partido 103 una profundidad comparable a la final 104. "
             "No recomiendes ajustes de pesos, ratings, variables ni escalas numericas del modelo."
     )
     return payload
@@ -199,14 +224,28 @@ def _surviving_teams_from_knockout_state(
         return teams.copy()
 
     eliminated: set[str] = set()
+    pending_match_teams: set[str] = set()
+    bracket_teams: set[str] = set()
     for row in knockout_state[required].itertuples(index=False):
         team_a = str(row.team_a).strip()
         team_b = str(row.team_b).strip()
         winner = str(row.winner).strip()
+        for team in (team_a, team_b):
+            if team and not team.startswith(("Ganador ", "Perdedor ")):
+                bracket_teams.add(team)
         if winner and winner.lower() != "nan" and winner in {team_a, team_b}:
             eliminated.add(team_b if winner == team_a else team_a)
+        else:
+            for team in (team_a, team_b):
+                if team and not team.startswith(("Ganador ", "Perdedor ")):
+                    pending_match_teams.add(team)
 
-    return teams.loc[~teams["team"].isin(eliminated)].copy()
+    # Los perdedores de semifinales siguen siendo relevantes mientras el
+    # partido 103 este pendiente; no deben desaparecer del resumen de noticias.
+    relevant = teams["team"].isin(bracket_teams) & (
+        (~teams["team"].isin(eliminated)) | teams["team"].isin(pending_match_teams)
+    )
+    return teams.loc[relevant].copy()
 
 
 def call_llm_news_search(
@@ -243,20 +282,38 @@ def call_llm_news_search(
     team_list = ", ".join(focus_teams["team"].tolist())
     all_teams = ", ".join(teams["team"].tolist())
     known_survivors = ", ".join(surviving_teams["team"].tolist())
+    late_matches: list[dict[str, Any]] = []
+    if knockout_state is not None and not knockout_state.empty:
+        required_late = {"match_id", "team_a", "team_b"}
+        if required_late.issubset(knockout_state.columns):
+            late = knockout_state.copy()
+            late["match_id"] = pd.to_numeric(late["match_id"], errors="coerce")
+            late = late.loc[late["match_id"].isin([103, 104])]
+            late_columns = [
+                column for column in ["round", "match_id", "team_a", "team_b", "winner"]
+                if column in late.columns
+            ]
+            late_matches = late[late_columns].to_dict(orient="records")
     prompt = (
         f"Fecha de consulta: {date.today().isoformat()}.\n"
         f"Selecciones participantes en el Mundial 2026: {all_teams}.\n"
         f"Equipos que siguen vivos segun los resultados cargados: {known_survivors}.\n"
         f"Entre ellos, prioriza por rating/favoritismo del modelo: {team_list}.\n\n"
+        f"Partidos finales que requieren cobertura explicita (103 y 104): "
+        f"{json.dumps(late_matches, ensure_ascii=False)}.\n\n"
         "Primero verifica con fuentes fiables y resultados actualizados cuales de esas "
         "selecciones siguen vivas en el torneo en la fecha de consulta. Considera vivo a "
         "un equipo mientras conserve posibilidades de avanzar o no haya sido eliminado. "
-        "No incluyas noticias de selecciones ya eliminadas. "
+        "No incluyas noticias de selecciones sin ningun partido pendiente. Excepcion obligatoria: "
+        "los perdedores de semifinales que disputan el partido 103 siguen activos para el tercer lugar. "
         "Busca en internet noticias recientes y relevantes para el Mundial 2026 sobre "
         "lesiones, bajas, suspensiones, convocatorias, minutos recientes, racha de forma "
-        "y contexto competitivo de los principales favoritos al titulo. "
+        "y contexto competitivo de los principales favoritos al titulo, de los dos equipos del "
+        "partido por el tercer lugar y de los dos finalistas. "
         "Usa informacion verificable y reciente; ignora rumores debiles o contenido sin "
-        "fuente clara. Organiza por seleccion. "
+        "fuente clara. Organiza primero una seccion '## Partido por el tercer lugar (103)' con "
+        "noticias de ambos participantes y luego una seccion '## Final (104)' con ambos finalistas. "
+        "Da una profundidad comparable a los dos partidos y no omitas el 103. "
         "Cada bullet debe incluir fecha aproximada y fuente o URL. "
         "Si no encuentras informacion reciente y confiable de una seleccion, dilo en una "
         "linea breve. Devuelve texto listo para pegar en el campo de analisis cualitativo."

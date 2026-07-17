@@ -10,6 +10,7 @@ de datos.  El punto de entrada principal es ``main()`` llamado desde
 from __future__ import annotations
 
 import html
+import hashlib
 import importlib
 import json
 from io import BytesIO
@@ -22,7 +23,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 from dotenv import load_dotenv
 
-from wcup2026.bracket import ROUND_TEMPLATES
+from wcup2026.bracket import ROUND_TEMPLATES, THIRD_PLACE_MATCH_ID, THIRD_PLACE_SEMIFINALS
 from wcup2026.config import (
     APP_CAPTION,
     APP_TITLE,
@@ -73,6 +74,24 @@ from wcup2026.simulator import (
     simulate_knockout_projection_from_group_results,
     simulate_many,
 )
+
+
+KNOCKOUT_STATE_SCHEMA_VERSION = 2
+
+
+def _analysis_context_signature(
+    results: pd.DataFrame | None,
+    bracket_probable: pd.DataFrame | None,
+) -> str | None:
+    """Crear una firma estable del contexto cuantitativo enviado al LLM."""
+    if results is None or results.empty:
+        return None
+    digest = hashlib.sha256()
+    digest.update(results.sort_values("team").to_csv(index=False).encode("utf-8"))
+    if bracket_probable is not None and not bracket_probable.empty:
+        bracket = bracket_probable.sort_values("match_id")
+        digest.update(bracket.to_csv(index=False).encode("utf-8"))
+    return digest.hexdigest()
 
 
 def configure_page() -> None:
@@ -285,8 +304,10 @@ def run_post_group_bracket_cached(
     knockout_results_csv_text: str,
     knockout_input_csv_text: str,
     params: SimParams,
+    schema_version: int,
 ) -> pd.DataFrame:
     """Generar una llave representativa desde resultados finales de grupos."""
+    del schema_version
     df = dataframe_from_csv_text(csv_text)
     group_results = dataframe_from_csv_text(group_results_csv_text)
     knockout_results = dataframe_from_csv_text(knockout_results_csv_text)
@@ -308,8 +329,10 @@ def run_post_group_bracket_probable_cached(
     knockout_results_csv_text: str,
     knockout_input_csv_text: str,
     params: SimParams,
+    schema_version: int,
 ) -> pd.DataFrame:
     """Generar la llave mas probable desde resultados finales de grupos."""
+    del schema_version
     df = dataframe_from_csv_text(csv_text)
     group_results = dataframe_from_csv_text(group_results_csv_text)
     knockout_results = dataframe_from_csv_text(knockout_results_csv_text)
@@ -332,8 +355,10 @@ def run_post_group_projection_cached(
     knockout_results_csv_text: str,
     knockout_input_csv_text: str,
     params: SimParams,
+    schema_version: int,
 ) -> pd.DataFrame:
     """Estimar probabilidades de eliminatorias desde grupos ya definidos."""
+    del schema_version
     df = dataframe_from_csv_text(csv_text)
     group_results = dataframe_from_csv_text(group_results_csv_text)
     knockout_results = dataframe_from_csv_text(knockout_results_csv_text)
@@ -355,8 +380,10 @@ def build_post_group_knockout_state_cached(
     knockout_results_csv_text: str,
     knockout_input_csv_text: str,
     params: SimParams,
+    schema_version: int,
 ) -> pd.DataFrame:
     """Construir estado editable de eliminatorias desde grupos + resultados KO parciales."""
+    del schema_version  # Forma parte de la clave de cache e invalida esquemas anteriores.
     df = dataframe_from_csv_text(csv_text)
     group_results = dataframe_from_csv_text(group_results_csv_text)
     knockout_results = dataframe_from_csv_text(knockout_results_csv_text)
@@ -401,6 +428,7 @@ def rebuild_post_group_knockout_state(
         dataframe_to_csv_text(fixed_results),
         dataframe_to_csv_text(fixture_override),
         params,
+        KNOCKOUT_STATE_SCHEMA_VERSION,
     )
 
 
@@ -576,13 +604,34 @@ def render_probability_view(results: pd.DataFrame) -> None:
         DataFrame de resultados ordenado por probabilidad de campeon
         (salida de ``simulate_many``).
     """
+    third_place_available = (
+        "third_place_pct" in results.columns
+        and results["third_place_pct"].notna().any()
+    )
+    if not third_place_available:
+        results = results.copy()
+        results["third_place_pct"] = float("nan")
     top = results.head(12).copy()
     favorite = results.iloc[0]
-    col1, col2, col3, col4 = st.columns(4)
+    third_place_favorite = (
+        results.sort_values("third_place_pct", ascending=False).iloc[0]
+        if third_place_available
+        else None
+    )
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Favorito", favorite["team"], f"{favorite['champion_pct']:.1f}% campeon", help="Equipo con mayor probabilidad de ganar el torneo segun la simulacion Monte Carlo.")
     col2.metric("Final", favorite["team"], f"{favorite['final_pct']:.1f}%", help="Probabilidad de que el favorito llegue a la final del torneo.")
     col3.metric("Semifinal", favorite["team"], f"{favorite['semifinal_pct']:.1f}%", help="Probabilidad de que el favorito alcance al menos las semifinales.")
-    col4.metric("Rating modelo", f"{favorite['overall']:.1f}", "0-100 relativo", help="Rating compuesto del favorito en escala 0-100. Combina Elo, plantilla, forma y balance tactico segun los pesos configurados.")
+    if third_place_favorite is not None:
+        col4.metric(
+            "Tercer lugar",
+            third_place_favorite["team"],
+            f"{third_place_favorite['third_place_pct']:.1f}%",
+            help="Probabilidad incondicional de terminar tercero, es decir, perder la semifinal y ganar el partido 103.",
+        )
+    else:
+        col4.metric("Tercer lugar", "No calculado", "Vuelve a simular")
+    col5.metric("Rating modelo", f"{favorite['overall']:.1f}", "0-100 relativo", help="Rating compuesto del favorito en escala 0-100. Combina Elo, plantilla, forma y balance tactico segun los pesos configurados.")
 
     stage_cols = [
         "round_of_32_pct",
@@ -593,6 +642,16 @@ def render_probability_view(results: pd.DataFrame) -> None:
         "champion_pct",
     ]
     stage_labels = ["R32", "Octavos", "Cuartos", "Semis", "Final", "Campeon"]
+    heatmap_cols = [
+        "round_of_32_pct",
+        "round_of_16_pct",
+        "quarterfinal_pct",
+        "semifinal_pct",
+        "third_place_pct",
+        "final_pct",
+        "champion_pct",
+    ]
+    heatmap_labels = ["R32", "Octavos", "Cuartos", "Semis", "3.er lugar", "Final", "Campeon"]
 
     tab_rank, tab_path, tab_heatmap = st.tabs(["Favoritos", "Ruta por ronda", "Mapa de avance"])
 
@@ -655,12 +714,12 @@ def render_probability_view(results: pd.DataFrame) -> None:
 
     with tab_heatmap:
         heat = results.head(16).copy()
-        z_values = heat[stage_cols].round(1).to_numpy()
+        z_values = heat[heatmap_cols].round(1).to_numpy()
         text_values = [[f"{value:.1f}%" for value in row] for row in z_values]
         fig = go.Figure(
             go.Heatmap(
                 z=z_values,
-                x=stage_labels,
+                x=heatmap_labels,
                 y=heat["team"],
                 text=text_values,
                 texttemplate="%{text}",
@@ -694,6 +753,7 @@ def render_probability_view(results: pd.DataFrame) -> None:
                 "round_of_16_pct",
                 "quarterfinal_pct",
                 "semifinal_pct",
+                "third_place_pct",
                 "final_pct",
                 "champion_pct",
             ]
@@ -930,21 +990,25 @@ def render_llm_view(
         help="Agrega contexto que el modelo cuantitativo no captura: lesiones, suspensiones, clima, rivalidades, rotaciones o escenarios hipoteticos. Puedes editarlo libremente despues de usar 'Buscar noticias'.",
     )
 
+    active_bracket_probable = (
+        bracket_probable
+        if bracket_probable is not None
+        else st.session_state.get("bracket_probable")
+    )
+    current_analysis_signature = _analysis_context_signature(results, active_bracket_probable)
+
     if st.button("Generar analisis LLM", type="primary", help="Envia los resultados de la simulacion y el escenario cualitativo al LLM para obtener un analisis integrado con recomendaciones accionables."):
         if results is None:
             st.warning("Primero pulsa **Simular torneo** para tener resultados que analizar.")
         else:
             payload = build_analysis_payload(
                 results, df, notes,
-                bracket_probable=(
-                    bracket_probable
-                    if bracket_probable is not None
-                    else st.session_state.get("bracket_probable")
-                ),
+                bracket_probable=active_bracket_probable,
             )
             try:
                 with st.spinner("Consultando al LLM..."):
                     st.session_state["llm_answer"] = call_llm_analysis(model, payload).strip()
+                    st.session_state["_llm_analysis_context_signature"] = current_analysis_signature
                     save_llm_analysis(st.session_state["llm_answer"])
             except Exception as exc:  # pragma: no cover - UI guardrail
                 st.error(f"No se pudo consultar el LLM: {exc}")
@@ -952,8 +1016,15 @@ def render_llm_view(
     if "llm_answer" in st.session_state:
         answer = st.session_state["llm_answer"]
         if answer:
-            render_copy_button(answer, key="analysis")
-            st.markdown(answer)
+            saved_signature = st.session_state.get("_llm_analysis_context_signature")
+            if saved_signature != current_analysis_signature:
+                st.warning(
+                    "El analisis guardado pertenece a una simulacion anterior y puede contener "
+                    "probabilidades desactualizadas. Pulsa **Generar analisis LLM** nuevamente."
+                )
+            else:
+                render_copy_button(answer, key="analysis")
+                st.markdown(answer)
         else:
             st.warning("El LLM respondio sin texto visible. Revisa el modelo configurado o intenta de nuevo.")
 
@@ -1117,6 +1188,7 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
         "round_of_16": "Octavos",
         "quarterfinal": "Cuartos",
         "semifinal": "Semifinal",
+        "third_place": "Tercer lugar",
         "final": "Final",
     }
 
@@ -1131,7 +1203,7 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
             97: (2, 27.0), 98: (2, 19.0),
             99: (2, 11.0), 100: (2, 3.0),
             101: (3, 23.0), 102: (3, 7.0),
-            104: (4, 15.0),
+            104: (4, 18.0), 103: (4, 12.0),
         })
         col_x = {0: 0.0, 1: 3.6, 2: 7.2, 3: 10.8, 4: 14.4}
         col_labels = {
@@ -1139,7 +1211,7 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
             1: "Octavos",
             2: "Cuartos",
             3: "Semifinales",
-            4: "Final",
+            4: "Final / 3.er lugar",
         }
         box_hh = 0.42
         y_range = [-1.7, 32.2]
@@ -1151,10 +1223,10 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
             97: (0, 9.0), 98: (0, 6.0),
             99: (0, 3.0), 100: (0, 0.0),
             101: (1, 7.5), 102: (1, 1.5),
-            104: (2, 4.5),
+            104: (2, 6.5), 103: (2, 2.5),
         }
         col_x = {0: 0.0, 1: 3.5, 2: 7.0}
-        col_labels = {0: "Cuartos de Final", 1: "Semifinales", 2: "Final"}
+        col_labels = {0: "Cuartos de Final", 1: "Semifinales", 2: "Final / 3.er lugar"}
         box_hh = 0.65
         y_range = [-1.5, 11.5]
         x_range = [-1.5, 9.0]
@@ -1169,10 +1241,10 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
             97: (1, 13.0), 98: (1, 9.0),
             99: (1, 5.0),  100: (1, 1.0),
             101: (2, 11.0), 102: (2, 3.0),
-            104: (3, 7.0),
+            104: (3, 10.0), 103: (3, 4.0),
         }
         col_x = {0: 0.0, 1: 3.5, 2: 7.0, 3: 10.5}
-        col_labels = {0: "Octavos", 1: "Cuartos", 2: "Semifinales", 3: "Final"}
+        col_labels = {0: "Octavos", 1: "Cuartos", 2: "Semifinales", 3: "Final / 3.er lugar"}
         box_hh = 0.45
         y_range = [-1.5, 16.5]
         x_range = [-1.5, 12.5]
@@ -1187,6 +1259,7 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
         97: (89, 90), 98: (91, 92),
         99: (93, 94), 100: (95, 96),
         101: (97, 98), 102: (99, 100),
+        103: (101, 102),
         104: (101, 102),
     }
     box_hw = 1.45
@@ -1222,6 +1295,8 @@ def _build_bracket_figure(bracket: pd.DataFrame, from_round: str = "round_of_16"
             return "quarterfinal"
         if 101 <= match_id <= 102:
             return "semifinal"
+        if match_id == THIRD_PLACE_MATCH_ID:
+            return "third_place"
         return "final"
 
     for child_id, (p1_id, p2_id) in parents.items():
@@ -1356,7 +1431,8 @@ def render_bracket_view(
 ) -> None:
     """Renderizar el cuadro de eliminacion del torneo como grafico tipo arbol.
 
-    Muestra los partidos desde octavos o cuartos de final hasta la final.
+    Muestra los partidos desde octavos o cuartos, incluido el tercer lugar,
+    hasta la final.
     Permite elegir entre una simulacion representativa (semilla fija) o el
     cuadro mas probable calculado sobre 1000 simulaciones, donde el
     ganador de cada posicion es el equipo que gano con mas frecuencia y
@@ -1421,6 +1497,20 @@ def render_bracket_view(
         )
 
     fig = _build_bracket_figure(active, from_round)
+    third_place_rows = active.loc[
+        pd.to_numeric(active["match_id"], errors="coerce").eq(THIRD_PLACE_MATCH_ID)
+    ]
+    if not third_place_rows.empty:
+        third_place = third_place_rows.iloc[0]
+        winner = str(third_place.get("winner", "")).strip()
+        raw_pct = third_place.get("winner_pct")
+        pct = None if pd.isna(raw_pct) else float(raw_pct)
+        if winner and winner not in {"None", "nan"}:
+            probability_text = f"{pct:.1f}%" if pct is not None else "sin probabilidad calculada"
+            st.info(
+                f"**Tercer lugar probable:** {winner} ({probability_text}) — "
+                f"partido 103: {third_place['team_a']} vs. {third_place['team_b']}."
+            )
     st.plotly_chart(fig, width='stretch')
 
 
@@ -1539,13 +1629,27 @@ def normalize_knockout_results_update(update: pd.DataFrame, fixtures: pd.DataFra
     resolved_fixture_map: dict[int, dict[str, str]] = {}
 
     def is_placeholder(value: object) -> bool:
-        return str(value).strip().startswith("Ganador ")
+        return str(value).strip().startswith(("Ganador ", "Perdedor "))
 
     for match_id in sorted(fixture_map):
         raw = fixture_map[match_id]
         raw_a = str(raw["team_a"]).strip()
         raw_b = str(raw["team_b"]).strip()
-        if match_id in round_parents:
+        if match_id == THIRD_PLACE_MATCH_ID:
+            semifinal_losers: list[str] = []
+            for semifinal_id, fallback in zip(THIRD_PLACE_SEMIFINALS, (raw_a, raw_b)):
+                semifinal_fixture = resolved_fixture_map.get(semifinal_id, {})
+                semifinal_winner = resolved_winners.get(semifinal_id)
+                semifinal_teams = {
+                    str(semifinal_fixture.get("team_a", "")).strip(),
+                    str(semifinal_fixture.get("team_b", "")).strip(),
+                }
+                if semifinal_winner in semifinal_teams and len(semifinal_teams) == 2:
+                    semifinal_losers.append(next(team for team in semifinal_teams if team != semifinal_winner))
+                else:
+                    semifinal_losers.append(fallback)
+            team_a, team_b = semifinal_losers
+        elif match_id in round_parents:
             left_id, right_id = round_parents[match_id]
             team_a = resolved_winners.get(left_id, raw_a)
             team_b = resolved_winners.get(right_id, raw_b)
@@ -1617,6 +1721,8 @@ def clear_post_group_outputs() -> None:
     """Limpiar salidas derivadas cuando cambian los resultados reales."""
     for key in ["post_group_projection", "post_group_bracket", "post_group_bracket_probable"]:
         st.session_state.pop(key, None)
+    st.session_state.pop("llm_answer", None)
+    st.session_state.pop("_llm_analysis_context_signature", None)
 
 
 def render_post_group_knockout_view(
@@ -1656,8 +1762,11 @@ def render_post_group_knockout_view(
             st.error(f"No se pudo cargar {POST_GROUP_STATE_PATH}: {exc}")
 
     source_mode = "xlsx" if saved_post_group_state is not None else "manual"
-    source_signature = f"post-group-source:{source_mode}:{state_file_stamp}\n" + dataframe_to_csv_text(
+    source_signature = (
+        f"post-group-source:v{KNOCKOUT_STATE_SCHEMA_VERSION}:{source_mode}:{state_file_stamp}\n"
+        + dataframe_to_csv_text(
         df[["team", "group"]].sort_values(["group", "team"]).reset_index(drop=True)
+        )
     )
     if (
         "post_group_results_input" not in st.session_state
@@ -1733,6 +1842,7 @@ def render_post_group_knockout_view(
                                 knockout_csv_text,
                                 fixture_override_csv_text,
                                 params,
+                                KNOCKOUT_STATE_SCHEMA_VERSION,
                             )
                         except ValueError:
                             rebuilt_fixtures = build_post_group_knockout_state_cached(
@@ -1741,6 +1851,7 @@ def render_post_group_knockout_view(
                                 dataframe_to_csv_text(pd.DataFrame(columns=["match_id", "winner"])),
                                 dataframe_to_csv_text(pd.DataFrame(columns=["match_id", "team_a", "team_b"])),
                                 params,
+                                KNOCKOUT_STATE_SCHEMA_VERSION,
                             )
 
                         st.session_state["post_group_knockout_input"] = rebuilt_fixtures
@@ -1822,7 +1933,12 @@ def render_post_group_knockout_view(
     s1, s2, s3 = st.columns(3)
     s1.metric("Estado grupos", "Valido" if normalized_groups is not None else "Invalido")
     s2.metric("Resultados KO cargados", str(confirmed_count))
-    s3.metric("Partidos KO totales", "31")
+    total_knockout_matches = (
+        len(fixtures_preview)
+        if isinstance(fixtures_preview, pd.DataFrame) and not fixtures_preview.empty
+        else 32
+    )
+    s3.metric("Partidos KO totales", str(total_knockout_matches))
 
     with st.expander("Resultados reales de eliminatorias (opcional)", expanded=False):
         st.markdown(
@@ -1879,7 +1995,13 @@ def render_post_group_knockout_view(
             winner_options = [""]
             known_teams = set(fixtures_input["team_a"].astype(str).str.strip().tolist())
             known_teams.update(fixtures_input["team_b"].astype(str).str.strip().tolist())
-            winner_options.extend(sorted(team for team in known_teams if team and not team.startswith("Ganador ")))
+            winner_options.extend(
+                sorted(
+                    team
+                    for team in known_teams
+                    if team and not team.startswith(("Ganador ", "Perdedor "))
+                )
+            )
 
             edited_fixtures = st.data_editor(
                 fixtures_input,
@@ -1983,6 +2105,11 @@ def render_post_group_knockout_view(
             group_csv_text = dataframe_to_csv_text(normalized_groups)
             knockout_csv_text = dataframe_to_csv_text(knockout_results)
             fixture_override_csv_text = dataframe_to_csv_text(fixtures_for_model)
+            # El boton Modelar debe recalcular siempre: evita reutilizar salidas
+            # creadas con un esquema anterior que no incluia el partido 103.
+            run_post_group_projection_cached.clear()
+            run_post_group_bracket_cached.clear()
+            run_post_group_bracket_probable_cached.clear()
             with st.spinner("Simulando eliminatorias desde grupos cargados..."):
                 st.session_state["post_group_projection"] = run_post_group_projection_cached(
                     csv_text,
@@ -1990,6 +2117,7 @@ def render_post_group_knockout_view(
                     knockout_csv_text,
                     fixture_override_csv_text,
                     params,
+                    KNOCKOUT_STATE_SCHEMA_VERSION,
                 )
                 st.session_state["post_group_bracket"] = run_post_group_bracket_cached(
                     csv_text,
@@ -1997,6 +2125,7 @@ def render_post_group_knockout_view(
                     knockout_csv_text,
                     fixture_override_csv_text,
                     params,
+                    KNOCKOUT_STATE_SCHEMA_VERSION,
                 )
                 st.session_state["post_group_bracket_probable"] = run_post_group_bracket_probable_cached(
                     csv_text,
@@ -2004,9 +2133,12 @@ def render_post_group_knockout_view(
                     knockout_csv_text,
                     fixture_override_csv_text,
                     params,
+                    KNOCKOUT_STATE_SCHEMA_VERSION,
                 )
                 st.session_state["post_group_knockout_results"] = knockout_results
                 st.session_state["post_group_knockout_input"] = fixtures_for_model
+                st.session_state.pop("llm_answer", None)
+                st.session_state.pop("_llm_analysis_context_signature", None)
             st.success("Llaves modeladas desde los resultados de grupos cargados.")
         except Exception as exc:
             st.error(f"No se pudieron modelar las llaves: {exc}")
@@ -2017,12 +2149,28 @@ def render_post_group_knockout_view(
     if projection is None or not show_outputs:
         return
 
+    third_place_available = (
+        "third_place_pct" in projection.columns
+        and projection["third_place_pct"].notna().any()
+    )
+    if not third_place_available:
+        projection = projection.copy()
+        projection["third_place_pct"] = float("nan")
     favorite = projection.iloc[0]
-    c1, c2, c3, c4 = st.columns(4)
+    third_place_favorite = (
+        projection.sort_values("third_place_pct", ascending=False).iloc[0]
+        if third_place_available
+        else None
+    )
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Favorito post-grupos", favorite["team"], f"{favorite['champion_pct']:.1f}% campeon")
     c2.metric("Final", favorite["team"], f"{favorite['final_pct']:.1f}%")
     c3.metric("Semifinal", favorite["team"], f"{favorite['semifinal_pct']:.1f}%")
-    c4.metric("Rating modelo", f"{favorite['overall']:.1f}", "0-100 relativo")
+    if third_place_favorite is not None:
+        c4.metric("Tercer lugar", third_place_favorite["team"], f"{third_place_favorite['third_place_pct']:.1f}%")
+    else:
+        c4.metric("Tercer lugar", "No calculado", "Pulsa Modelar nuevamente")
+    c5.metric("Rating modelo", f"{favorite['overall']:.1f}", "0-100 relativo")
 
     col_mode, col_round = st.columns([2, 2])
     with col_mode:
@@ -2061,6 +2209,7 @@ def render_post_group_knockout_view(
                 "round_of_16_pct",
                 "quarterfinal_pct",
                 "semifinal_pct",
+                "third_place_pct",
                 "final_pct",
                 "champion_pct",
             ]
@@ -2129,6 +2278,8 @@ def render_app() -> None:
                     bracket=st.session_state["bracket"],
                     bracket_probable=st.session_state["bracket_probable"],
                 )
+                st.session_state.pop("llm_answer", None)
+                st.session_state.pop("_llm_analysis_context_signature", None)
             except Exception as exc:
                 st.error(f"No se pudo correr la simulacion: {exc}")
     else:

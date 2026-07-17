@@ -15,7 +15,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from wcup2026.bracket import R32_MATCHES, ROUND_TEMPLATES, THIRD_PLACE_COMBINATIONS
+from wcup2026.bracket import (
+    R32_MATCHES,
+    ROUND_TEMPLATES,
+    THIRD_PLACE_COMBINATIONS,
+    THIRD_PLACE_MATCH_ID,
+    THIRD_PLACE_SEMIFINALS,
+)
 from wcup2026.config import GROUPS, STAGE_COLUMNS
 from wcup2026.data import prepare_teams
 from wcup2026.parameters import SimParams
@@ -525,6 +531,15 @@ def simulate_knockout_pair(
     return simulate_match(team_a, team_b, teams, rng, params, knockout=True)["winner"]
 
 
+def _losing_team(team_a: str, team_b: str, winner: str) -> str:
+    """Devolver el perdedor de un partido con ganador ya resuelto."""
+    if winner == team_a:
+        return team_b
+    if winner == team_b:
+        return team_a
+    raise ValueError(f"Ganador '{winner}' no coincide con {team_a} vs {team_b}.")
+
+
 def simulate_one_tournament(
     df: pd.DataFrame,
     teams: dict[str, dict[str, Any]],
@@ -595,6 +610,7 @@ def simulate_one_tournament(
         winners[match_id] = simulate_knockout_pair(team_a, team_b, teams, rng, params)
     counts["round_of_16"].update(winners[match_id] for match_id in range(73, 89))
 
+    semifinal_losers: dict[int, str] = {}
     for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
         next_stage = {
             "round_of_16": "quarterfinal",
@@ -607,8 +623,22 @@ def simulate_one_tournament(
             team_a = winners[left_id]
             team_b = winners[right_id]
             winners[match_id] = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            if round_name == "semifinal":
+                semifinal_losers[match_id] = _losing_team(team_a, team_b, winners[match_id])
 
         counts[next_stage].update(winners[match_id] for match_id in ROUND_TEMPLATES[round_name])
+
+    third_place_team_a = semifinal_losers[THIRD_PLACE_SEMIFINALS[0]]
+    third_place_team_b = semifinal_losers[THIRD_PLACE_SEMIFINALS[1]]
+    third_place_winner = simulate_knockout_pair(
+        third_place_team_a,
+        third_place_team_b,
+        teams,
+        rng,
+        params,
+    )
+    winners[THIRD_PLACE_MATCH_ID] = third_place_winner
+    counts["third_place"].add(third_place_winner)
 
     final_match = ROUND_TEMPLATES["final"][104]
     finalist_a = winners[final_match[0]]
@@ -620,6 +650,7 @@ def simulate_one_tournament(
         "counts": counts,
         "champion": champion,
         "runner_up": runner_up,
+        "third_place": third_place_winner,
         "group_tables": group_tables,
         "best_thirds": best_thirds,
     }
@@ -751,8 +782,8 @@ def simulate_bracket_sample(df: pd.DataFrame, params: SimParams) -> pd.DataFrame
     """Simular un torneo completo y devolver los partidos de eliminatoria.
 
     Corre una unica simulacion determinista (con la semilla del params) y
-    devuelve todos los partidos desde la ronda de 32 hasta la final con los
-    equipos que jugaron y el ganador de cada uno.
+    devuelve todos los partidos desde la ronda de 32, incluido el partido
+    por el tercer lugar, hasta la final con los equipos y cada ganador.
 
     Parameters
     ----------
@@ -803,12 +834,15 @@ def simulate_bracket_sample(df: pd.DataFrame, params: SimParams) -> pd.DataFrame
             "winner_pct": None,
         })
 
-    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+    semifinal_losers: dict[int, str] = {}
+    for round_name in ["round_of_16", "quarterfinal", "semifinal"]:
         for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
             team_a = winners[left_id]
             team_b = winners[right_id]
             winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
             winners[match_id] = winner
+            if round_name == "semifinal":
+                semifinal_losers[match_id] = _losing_team(team_a, team_b, winner)
             rows.append({
                 "round": round_name,
                 "match_id": match_id,
@@ -817,6 +851,33 @@ def simulate_bracket_sample(df: pd.DataFrame, params: SimParams) -> pd.DataFrame
                 "winner": winner,
                 "winner_pct": None,
             })
+
+    team_a = semifinal_losers[THIRD_PLACE_SEMIFINALS[0]]
+    team_b = semifinal_losers[THIRD_PLACE_SEMIFINALS[1]]
+    winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+    winners[THIRD_PLACE_MATCH_ID] = winner
+    rows.append({
+        "round": "third_place",
+        "match_id": THIRD_PLACE_MATCH_ID,
+        "team_a": team_a,
+        "team_b": team_b,
+        "winner": winner,
+        "winner_pct": None,
+    })
+
+    for match_id, (left_id, right_id) in ROUND_TEMPLATES["final"].items():
+        team_a = winners[left_id]
+        team_b = winners[right_id]
+        winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+        winners[match_id] = winner
+        rows.append({
+            "round": "final",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+            "winner_pct": None,
+        })
 
     return pd.DataFrame(rows)
 
@@ -1077,12 +1138,15 @@ def _simulate_knockout_rows(
             "winner_pct": None,
         })
 
-    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+    semifinal_losers: dict[int, str] = {}
+    for round_name in ["round_of_16", "quarterfinal", "semifinal"]:
         for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
             team_a = winners[left_id]
             team_b = winners[right_id]
             winner = pick_winner(match_id, team_a, team_b)
             winners[match_id] = winner
+            if round_name == "semifinal":
+                semifinal_losers[match_id] = _losing_team(team_a, team_b, winner)
             rows.append({
                 "round": round_name,
                 "match_id": match_id,
@@ -1091,6 +1155,33 @@ def _simulate_knockout_rows(
                 "winner": winner,
                 "winner_pct": None,
             })
+
+    team_a = semifinal_losers[THIRD_PLACE_SEMIFINALS[0]]
+    team_b = semifinal_losers[THIRD_PLACE_SEMIFINALS[1]]
+    winner = pick_winner(THIRD_PLACE_MATCH_ID, team_a, team_b)
+    winners[THIRD_PLACE_MATCH_ID] = winner
+    rows.append({
+        "round": "third_place",
+        "match_id": THIRD_PLACE_MATCH_ID,
+        "team_a": team_a,
+        "team_b": team_b,
+        "winner": winner,
+        "winner_pct": None,
+    })
+
+    for match_id, (left_id, right_id) in ROUND_TEMPLATES["final"].items():
+        team_a = winners[left_id]
+        team_b = winners[right_id]
+        winner = pick_winner(match_id, team_a, team_b)
+        winners[match_id] = winner
+        rows.append({
+            "round": "final",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+            "winner_pct": None,
+        })
 
     return rows
 
@@ -1172,7 +1263,8 @@ def build_knockout_state_from_group_results(
             }
         )
 
-    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+    semifinal_losers: dict[int, str] = {}
+    for round_name in ["round_of_16", "quarterfinal", "semifinal"]:
         for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
             team_a = winners_or_placeholders[left_id]
             team_b = winners_or_placeholders[right_id]
@@ -1188,6 +1280,12 @@ def build_knockout_state_from_group_results(
             else:
                 winners_or_placeholders[match_id] = f"Ganador {match_id}"
 
+            if round_name == "semifinal":
+                if both_concrete and winner:
+                    semifinal_losers[match_id] = _losing_team(team_a, team_b, winner)
+                else:
+                    semifinal_losers[match_id] = f"Perdedor {match_id}"
+
             rows.append(
                 {
                     "round": round_name,
@@ -1197,6 +1295,44 @@ def build_knockout_state_from_group_results(
                     "winner": winner,
                 }
             )
+
+    team_a = semifinal_losers[THIRD_PLACE_SEMIFINALS[0]]
+    team_b = semifinal_losers[THIRD_PLACE_SEMIFINALS[1]]
+    winner = fixed_winners.get(THIRD_PLACE_MATCH_ID, "")
+    both_concrete = not team_a.startswith("Perdedor ") and not team_b.startswith("Perdedor ")
+    if winner and (not both_concrete or winner not in {team_a, team_b}):
+        raise ValueError(
+            f"Partido {THIRD_PLACE_MATCH_ID}: ganador '{winner}' no coincide con {team_a} vs {team_b}."
+        )
+    winners_or_placeholders[THIRD_PLACE_MATCH_ID] = winner or f"Ganador {THIRD_PLACE_MATCH_ID}"
+    rows.append({
+        "round": "third_place",
+        "match_id": THIRD_PLACE_MATCH_ID,
+        "team_a": team_a,
+        "team_b": team_b,
+        "winner": winner,
+    })
+
+    for match_id, (left_id, right_id) in ROUND_TEMPLATES["final"].items():
+        team_a = winners_or_placeholders[left_id]
+        team_b = winners_or_placeholders[right_id]
+        winner = fixed_winners.get(match_id, "")
+        both_concrete = not team_a.startswith("Ganador ") and not team_b.startswith("Ganador ")
+        if winner:
+            if not both_concrete or winner not in {team_a, team_b}:
+                raise ValueError(
+                    f"Partido {match_id}: ganador '{winner}' no coincide con {team_a} vs {team_b}."
+                )
+            winners_or_placeholders[match_id] = winner
+        else:
+            winners_or_placeholders[match_id] = f"Ganador {match_id}"
+        rows.append({
+            "round": "final",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+        })
 
     return pd.DataFrame(rows)
 
@@ -1285,6 +1421,7 @@ def simulate_knockout_projection_from_group_results(
             stage_counts[bracket[match_id]]["semifinal"] += 1
         for match_id in ROUND_TEMPLATES["semifinal"]:
             stage_counts[bracket[match_id]]["final"] += 1
+        stage_counts[bracket[THIRD_PLACE_MATCH_ID]]["third_place"] += 1
         stage_counts[bracket[104]]["champion"] += 1
 
     base = clean.set_index("team")
@@ -1350,7 +1487,8 @@ def simulate_bracket_most_probable_from_group_results(
             pair_counts[match_id][pair] += 1
             head2head_counts[match_id][pair][winner] += 1
 
-        for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+        semifinal_losers: dict[int, str] = {}
+        for round_name in ["round_of_16", "quarterfinal", "semifinal"]:
             for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
                 team_a = winners[left_id]
                 team_b = winners[right_id]
@@ -1363,9 +1501,42 @@ def simulate_bracket_most_probable_from_group_results(
                 else:
                     winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
                 winners[match_id] = winner
+                if round_name == "semifinal":
+                    semifinal_losers[match_id] = _losing_team(team_a, team_b, winner)
                 pair = tuple(sorted([team_a, team_b]))
                 pair_counts[match_id][pair] += 1
                 head2head_counts[match_id][pair][winner] += 1
+
+        team_a = semifinal_losers[THIRD_PLACE_SEMIFINALS[0]]
+        team_b = semifinal_losers[THIRD_PLACE_SEMIFINALS[1]]
+        winner = fixed_winners.get(THIRD_PLACE_MATCH_ID)
+        if winner is not None:
+            if winner not in {team_a, team_b}:
+                raise ValueError(
+                    f"Partido {THIRD_PLACE_MATCH_ID}: ganador fijo '{winner}' no coincide con {team_a} vs {team_b}."
+                )
+        else:
+            winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+        winners[THIRD_PLACE_MATCH_ID] = winner
+        pair = tuple(sorted([team_a, team_b]))
+        pair_counts[THIRD_PLACE_MATCH_ID][pair] += 1
+        head2head_counts[THIRD_PLACE_MATCH_ID][pair][winner] += 1
+
+        for match_id, (left_id, right_id) in ROUND_TEMPLATES["final"].items():
+            team_a = winners[left_id]
+            team_b = winners[right_id]
+            winner = fixed_winners.get(match_id)
+            if winner is not None:
+                if winner not in {team_a, team_b}:
+                    raise ValueError(
+                        f"Partido {match_id}: ganador fijo '{winner}' no coincide con {team_a} vs {team_b}."
+                    )
+            else:
+                winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            winners[match_id] = winner
+            pair = tuple(sorted([team_a, team_b]))
+            pair_counts[match_id][pair] += 1
+            head2head_counts[match_id][pair][winner] += 1
 
     coherent_winner: dict[int, str] = {}
     rows: list[dict[str, Any]] = []
@@ -1391,7 +1562,8 @@ def simulate_bracket_most_probable_from_group_results(
             "winner_pct": pct,
         })
 
-    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+    coherent_semifinal_losers: dict[int, str] = {}
+    for round_name in ["round_of_16", "quarterfinal", "semifinal"]:
         for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
             team_a = coherent_winner[left_id]
             team_b = coherent_winner[right_id]
@@ -1405,6 +1577,8 @@ def simulate_bracket_most_probable_from_group_results(
                 winner = team_a if teams[team_a]["overall"] >= teams[team_b]["overall"] else team_b
                 pct = None
             coherent_winner[match_id] = winner
+            if round_name == "semifinal":
+                coherent_semifinal_losers[match_id] = _losing_team(team_a, team_b, winner)
             rows.append({
                 "round": round_name,
                 "match_id": match_id,
@@ -1413,6 +1587,49 @@ def simulate_bracket_most_probable_from_group_results(
                 "winner": winner,
                 "winner_pct": pct,
             })
+
+    team_a = coherent_semifinal_losers[THIRD_PLACE_SEMIFINALS[0]]
+    team_b = coherent_semifinal_losers[THIRD_PLACE_SEMIFINALS[1]]
+    pair = tuple(sorted([team_a, team_b]))
+    head2head = head2head_counts[THIRD_PLACE_MATCH_ID].get(pair, Counter())
+    total_h2h = sum(head2head.values())
+    if head2head:
+        winner = head2head.most_common(1)[0][0]
+        pct = round(100 * head2head[winner] / total_h2h, 1)
+    else:
+        winner = team_a if teams[team_a]["overall"] >= teams[team_b]["overall"] else team_b
+        pct = None
+    coherent_winner[THIRD_PLACE_MATCH_ID] = winner
+    rows.append({
+        "round": "third_place",
+        "match_id": THIRD_PLACE_MATCH_ID,
+        "team_a": team_a,
+        "team_b": team_b,
+        "winner": winner,
+        "winner_pct": pct,
+    })
+
+    for match_id, (left_id, right_id) in ROUND_TEMPLATES["final"].items():
+        team_a = coherent_winner[left_id]
+        team_b = coherent_winner[right_id]
+        pair = tuple(sorted([team_a, team_b]))
+        head2head = head2head_counts[match_id].get(pair, Counter())
+        total_h2h = sum(head2head.values())
+        if head2head:
+            winner = head2head.most_common(1)[0][0]
+            pct = round(100 * head2head[winner] / total_h2h, 1)
+        else:
+            winner = team_a if teams[team_a]["overall"] >= teams[team_b]["overall"] else team_b
+            pct = None
+        coherent_winner[match_id] = winner
+        rows.append({
+            "round": "final",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+            "winner_pct": pct,
+        })
 
     return pd.DataFrame(rows)
 
@@ -1488,16 +1705,38 @@ def simulate_bracket_most_probable(
             winner_counts[match_id][winner] += 1
             head2head_counts[match_id][pair][winner] += 1
 
-        for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+        semifinal_losers: dict[int, str] = {}
+        for round_name in ["round_of_16", "quarterfinal", "semifinal"]:
             for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
                 team_a = winners[left_id]
                 team_b = winners[right_id]
                 winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
                 winners[match_id] = winner
+                if round_name == "semifinal":
+                    semifinal_losers[match_id] = _losing_team(team_a, team_b, winner)
                 pair = tuple(sorted([team_a, team_b]))
                 pair_counts[match_id][pair] += 1
                 winner_counts[match_id][winner] += 1
                 head2head_counts[match_id][pair][winner] += 1
+
+        team_a = semifinal_losers[THIRD_PLACE_SEMIFINALS[0]]
+        team_b = semifinal_losers[THIRD_PLACE_SEMIFINALS[1]]
+        winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+        winners[THIRD_PLACE_MATCH_ID] = winner
+        pair = tuple(sorted([team_a, team_b]))
+        pair_counts[THIRD_PLACE_MATCH_ID][pair] += 1
+        winner_counts[THIRD_PLACE_MATCH_ID][winner] += 1
+        head2head_counts[THIRD_PLACE_MATCH_ID][pair][winner] += 1
+
+        for match_id, (left_id, right_id) in ROUND_TEMPLATES["final"].items():
+            team_a = winners[left_id]
+            team_b = winners[right_id]
+            winner = simulate_knockout_pair(team_a, team_b, teams, rng, params)
+            winners[match_id] = winner
+            pair = tuple(sorted([team_a, team_b]))
+            pair_counts[match_id][pair] += 1
+            winner_counts[match_id][winner] += 1
+            head2head_counts[match_id][pair][winner] += 1
 
     # Construir el bracket coherente de forma greedy:
     # el ganador mas frecuente en cada posicion avanza, y el porcentaje
@@ -1529,7 +1768,8 @@ def simulate_bracket_most_probable(
         })
 
     # --- Rondas posteriores: usar los ganadores coherentes como equipos ---
-    for round_name in ["round_of_16", "quarterfinal", "semifinal", "final"]:
+    coherent_semifinal_losers: dict[int, str] = {}
+    for round_name in ["round_of_16", "quarterfinal", "semifinal"]:
         for match_id, (left_id, right_id) in ROUND_TEMPLATES[round_name].items():
             team_a = coherent_winner[left_id]
             team_b = coherent_winner[right_id]
@@ -1545,6 +1785,8 @@ def simulate_bracket_most_probable(
                 winner = team_a
                 pct = None
             coherent_winner[match_id] = winner
+            if round_name == "semifinal":
+                coherent_semifinal_losers[match_id] = _losing_team(team_a, team_b, winner)
             rows.append({
                 "round": round_name,
                 "match_id": match_id,
@@ -1553,5 +1795,48 @@ def simulate_bracket_most_probable(
                 "winner": winner,
                 "winner_pct": pct,
             })
+
+    team_a = coherent_semifinal_losers[THIRD_PLACE_SEMIFINALS[0]]
+    team_b = coherent_semifinal_losers[THIRD_PLACE_SEMIFINALS[1]]
+    pair = tuple(sorted([team_a, team_b]))
+    head2head = head2head_counts[THIRD_PLACE_MATCH_ID].get(pair, Counter())
+    total_h2h = sum(head2head.values())
+    if head2head:
+        winner = head2head.most_common(1)[0][0]
+        pct = round(100 * head2head[winner] / total_h2h, 1)
+    else:
+        winner = team_a if teams[team_a]["overall"] >= teams[team_b]["overall"] else team_b
+        pct = None
+    coherent_winner[THIRD_PLACE_MATCH_ID] = winner
+    rows.append({
+        "round": "third_place",
+        "match_id": THIRD_PLACE_MATCH_ID,
+        "team_a": team_a,
+        "team_b": team_b,
+        "winner": winner,
+        "winner_pct": pct,
+    })
+
+    for match_id, (left_id, right_id) in ROUND_TEMPLATES["final"].items():
+        team_a = coherent_winner[left_id]
+        team_b = coherent_winner[right_id]
+        pair = tuple(sorted([team_a, team_b]))
+        head2head = head2head_counts[match_id].get(pair, Counter())
+        total_h2h = sum(head2head.values())
+        if head2head:
+            winner = head2head.most_common(1)[0][0]
+            pct = round(100 * head2head[winner] / total_h2h, 1)
+        else:
+            winner = team_a if teams[team_a]["overall"] >= teams[team_b]["overall"] else team_b
+            pct = None
+        coherent_winner[match_id] = winner
+        rows.append({
+            "round": "final",
+            "match_id": match_id,
+            "team_a": team_a,
+            "team_b": team_b,
+            "winner": winner,
+            "winner_pct": pct,
+        })
 
     return pd.DataFrame(rows)
